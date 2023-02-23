@@ -737,7 +737,7 @@ class BC(algo_base.DemonstrationAlgorithm):
                 loss_RWTAc=loss_RWTAc.item(),
                 loss_Hungarian=loss_Hungarian.item(),
                 pos_loss=pos_loss.item(),
-                yaw_loss=yaw_loss.item(),
+                yaw_loss=yaw_loss.item()*1e4,
                 # prob_loss=prob_loss.item(),
                 time_loss=time_loss.item(),
                 # percent_right_values=percent_right_values.item(),
