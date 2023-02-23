@@ -392,7 +392,7 @@ class BC(algo_base.DemonstrationAlgorithm):
                     expert_pos_i=   acts[:,i,0:self.traj_size_pos_ctrl_pts].float();
                     student_pos_j=  pred_acts[:,j,0:self.traj_size_pos_ctrl_pts].float()
 
-                    expert_yaw_i=   acts[:,i,self.traj_size_pos_ctrl_pts:(self.traj_size_pos_ctrl_pts+self.traj_size_yaw_ctrl_pts)].float();
+                    expert_yaw_i=   acts[:,i,self.traj_size_pos_ctrl_pts:(self.traj_size_pos_ctrl_pts+self.traj_size_yaw_ctrl_pts)].float()*1e4
                     student_yaw_j=  pred_acts[:,j,self.traj_size_pos_ctrl_pts:(self.traj_size_pos_ctrl_pts+self.traj_size_yaw_ctrl_pts)].float()
 
                     expert_time_i=       acts[:,i,-1:].float(); #Time. Note: Is you use only -1 (instead of -1:), then distance_time_matrix will have required_grad to false
@@ -712,9 +712,9 @@ class BC(algo_base.DemonstrationAlgorithm):
             loss_RWTAc = pos_loss_RWTAc + time_loss_RWTAc
 
             if(self.use_closed_form_yaw_student==False):
-                loss_Hungarian +=  1e4 * yaw_loss
-                loss_RWTAr +=  1e4 * yaw_loss_RWTAr
-                loss_RWTAc +=  1e4 * yaw_loss_RWTAc
+                loss_Hungarian += yaw_loss
+                loss_RWTAr += yaw_loss_RWTAr
+                loss_RWTAc += yaw_loss_RWTAc
 
             if(self.type_loss=="Hung"):
                 loss=loss_Hungarian
@@ -737,7 +737,7 @@ class BC(algo_base.DemonstrationAlgorithm):
                 loss_RWTAc=loss_RWTAc.item(),
                 loss_Hungarian=loss_Hungarian.item(),
                 pos_loss=pos_loss.item(),
-                yaw_loss=yaw_loss.item()*1e4,
+                yaw_loss=yaw_loss.item(),
                 # prob_loss=prob_loss.item(),
                 time_loss=time_loss.item(),
                 # percent_right_values=percent_right_values.item(),
