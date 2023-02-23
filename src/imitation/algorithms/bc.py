@@ -712,9 +712,9 @@ class BC(algo_base.DemonstrationAlgorithm):
             loss_RWTAc = pos_loss_RWTAc + time_loss_RWTAc
 
             if(self.use_closed_form_yaw_student==False):
-                loss_Hungarian +=  yaw_loss
-                loss_RWTAr +=  yaw_loss_RWTAr
-                loss_RWTAc +=  yaw_loss_RWTAc
+                loss_Hungarian +=  1e4 * yaw_loss
+                loss_RWTAr +=  1e4 * yaw_loss_RWTAr
+                loss_RWTAc +=  1e4 * yaw_loss_RWTAc
 
             if(self.type_loss=="Hung"):
                 loss=loss_Hungarian
@@ -891,6 +891,9 @@ class BC(algo_base.DemonstrationAlgorithm):
 
         for batch, stats_dict_it in it:
             loss, stats_dict_loss = self._calculate_loss(batch["obs"], batch["acts"])
+
+            print("pos loss", stats_dict_loss["pos_loss"])
+            print("yaw loss", stats_dict_loss["yaw_loss"])
 
             if(self.only_test_loss==False):
                 self.optimizer.zero_grad()
