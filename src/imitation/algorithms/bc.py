@@ -21,6 +21,8 @@ from imitation.util import logger
 from scipy.optimize import linear_sum_assignment
 import math
 import re
+from compression.utils.other import getPANTHERparamsAsCppStruct
+
 
 def reconstruct_policy(
     policy_path: str,
@@ -206,7 +208,7 @@ class BC(algo_base.DemonstrationAlgorithm):
         type_loss = "Hung",
         weight_prob=0.01,
         only_test_loss=False,
-        epsilon_RWTA=0.05
+        epsilon_RWTA=0.05,
     ):
         """Builds BC.
 
@@ -240,6 +242,8 @@ class BC(algo_base.DemonstrationAlgorithm):
         self.batch_size = batch_size
         self.only_test_loss = only_test_loss
         self.epsilon_RWTA = epsilon_RWTA
+        self.yaw_scaling = getPANTHERparamsAsCppStruct().yaw_scaling
+
         super().__init__(
             demonstrations=demonstrations,
             custom_logger=custom_logger,
@@ -392,7 +396,8 @@ class BC(algo_base.DemonstrationAlgorithm):
                     expert_pos_i=   acts[:,i,0:self.traj_size_pos_ctrl_pts].float();
                     student_pos_j=  pred_acts[:,j,0:self.traj_size_pos_ctrl_pts].float()
 
-                    expert_yaw_i=   acts[:,i,self.traj_size_pos_ctrl_pts:(self.traj_size_pos_ctrl_pts+self.traj_size_yaw_ctrl_pts)].float()*1e4
+                    # note expert yaw is scaled up by yaw_scaling param
+                    expert_yaw_i=   acts[:,i,self.traj_size_pos_ctrl_pts:(self.traj_size_pos_ctrl_pts+self.traj_size_yaw_ctrl_pts)].float()*self.yaw_scaling
                     student_yaw_j=  pred_acts[:,j,self.traj_size_pos_ctrl_pts:(self.traj_size_pos_ctrl_pts+self.traj_size_yaw_ctrl_pts)].float()
 
                     expert_time_i=       acts[:,i,-1:].float(); #Time. Note: Is you use only -1 (instead of -1:), then distance_time_matrix will have required_grad to false
@@ -841,7 +846,7 @@ class BC(algo_base.DemonstrationAlgorithm):
         log_rollouts_n_episodes: int = 5,
         progress_bar: bool = True,
         reset_tensorboard: bool = False,
-        save_full_policy_path=None
+        save_full_policy_path=None,
     ):
         """Train with supervised learning for some number of epochs.
 
