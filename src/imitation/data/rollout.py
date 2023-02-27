@@ -365,6 +365,19 @@ def generate_trajectories(
     num_demos=0;
     while np.any(active) and num_demos<total_demos_per_round:
         acts = get_actions(obs)
+
+        # "Need at least two internal knots" bugfix
+
+        # print("acts\n", acts)
+
+        # for i, act in enumerate(acts):
+        #     # act (=acts[i,:,:]) is the action of env 1
+        #     # print(f"env-{i}")
+        #     # print(f"act {act}")
+        #     for j, ac in enumerate(act):
+        #         print(f"total time {ac[-1]}")
+        #         # exit(0)
+
         for i in range(len(acts)):
             #acts[i,:,:] is the action of environment i
             if(np.isnan(np.sum(acts[i,:,:]))==False):
