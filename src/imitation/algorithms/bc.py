@@ -205,6 +205,7 @@ class BC(algo_base.DemonstrationAlgorithm):
         traj_size_pos_ctrl_pts = None,
         traj_size_yaw_ctrl_pts = None,
         use_closed_form_yaw_student = False,
+        make_yaw_NN = False,
         type_loss = "Hung",
         weight_prob=0.01,
         only_test_loss=False,
@@ -234,11 +235,12 @@ class BC(algo_base.DemonstrationAlgorithm):
             ValueError: If `weight_decay` is specified in `optimizer_kwargs` (use the
                 parameter `l2_weight` instead.)
         """
-        self.traj_size_pos_ctrl_pts=traj_size_pos_ctrl_pts;
-        self.traj_size_yaw_ctrl_pts=traj_size_yaw_ctrl_pts;
+        self.traj_size_pos_ctrl_pts=traj_size_pos_ctrl_pts
+        self.traj_size_yaw_ctrl_pts=traj_size_yaw_ctrl_pts
         self.use_closed_form_yaw_student=use_closed_form_yaw_student
+        self.make_yaw_NN=make_yaw_NN
         self.type_loss=type_loss
-        self.weight_prob=weight_prob;
+        self.weight_prob=weight_prob
         self.batch_size = batch_size
         self.only_test_loss = only_test_loss
         self.epsilon_RWTA = epsilon_RWTA
@@ -708,15 +710,20 @@ class BC(algo_base.DemonstrationAlgorithm):
             assert time_loss_RWTAc.requires_grad==True
 
             # assert A_WTA_matrix.requires_grad==True
-
             # assert prob_loss.requires_grad==True
 
-            loss_Hungarian=pos_loss +  time_loss#  + yaw_loss
+            loss_Hungarian = time_loss
+            loss_RWTAr = time_loss_RWTAr
+            loss_RWTAc = time_loss_RWTAc
 
-            loss_RWTAr = pos_loss_RWTAr + time_loss_RWTAr
-            loss_RWTAc = pos_loss_RWTAc + time_loss_RWTAc
+            if not self.make_yaw_NN:
+                print("pos is used in loss")
+                loss_Hungarian += pos_loss 
+                loss_RWTAr += pos_loss_RWTAr
+                loss_RWTAc += pos_loss_RWTAc
 
             if(self.use_closed_form_yaw_student==False):
+                print("yaw is used in loss")
                 loss_Hungarian += yaw_loss
                 loss_RWTAr += yaw_loss_RWTAr
                 loss_RWTAc += yaw_loss_RWTAc
