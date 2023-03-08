@@ -367,7 +367,6 @@ def generate_trajectories(
         acts = get_actions(obs)
 
         # "Need at least two internal knots" bugfix
-
         # print("acts\n", acts)
 
         # for i, act in enumerate(acts):
@@ -387,7 +386,6 @@ def generate_trajectories(
             venv.env_method("forceDone") 
 
         obs, rews, dones, infos = venv.step(acts) #This will call step_wait of  InteractiveTrajectoryCollector of dagger.py
-
 
         # If an environment is inactive, i.e. the episode completed for that
         # environment after `sample_until(trajectories)` was true, then we do

@@ -69,6 +69,24 @@ class LinearBetaSchedule(BetaSchedule):
         assert round_num >= 0
         return min(1, max(0, (self.rampdown_rounds - round_num) / self.rampdown_rounds))
 
+class OneZeroBetaSchedule(BetaSchedule):
+    """beta = 1 in round 0, and beta = 0 otherwise"""
+
+    def __call__(self, round_num: int) -> float:
+        """Computes beta value.
+
+        Args:
+            round_num: the current round number.
+
+        Returns:
+            beta = 1 in round 0, and beta = 0 otherwise
+        """
+        assert round_num >= 0
+        if round_num == 0:
+            beta = 1.0
+        else:
+            beta = 0.0
+        return beta
 
 def reconstruct_trainer(
     scratch_dir: types.AnyPath,
@@ -251,14 +269,17 @@ class InteractiveTrajectoryCollector(vec_env.VecEnvWrapper):
 
         mask = self.rng.uniform(0, 1, size=(self.num_envs,)) > self.beta
         mask = mask*not_has_nan #This forces to choose the expert if the action has nans. Note that the expert is designed to handle nans, while the student is not
-        ######## For printing:
+        
+        ##
+        ## For printing:
+        ##
+
         selection=[Style.BRIGHT+Fore.WHITE+"student"+Style.RESET_ALL for _ in mask.tolist()]
         for i in range(len(mask)):
             if mask[i]==False:
                 selection[i]=Style.BRIGHT+Fore.BLUE+"expert"+Style.RESET_ALL
         print(self.name+f"Beta: {self.beta}, selecting action from",', '.join(str(item) for item in selection)) #https://stackoverflow.com/a/67172597/6057617
         # print(', '.join(str(item) for item in selection))
-        #############
 
         if np.sum(mask) != 0: #If there is at least one env for which rand()>self.beta
             actual_acts[mask] = self.get_robot_acts(self._last_obs[mask]) #Get the student actions for the cases where mask_i==True. Retain the expert actions when mask_i==False
@@ -538,6 +559,7 @@ class DAggerTrainer(base.BaseImitationAlgorithm):
         """
         save_dir = self._demo_dir_path_for_round()
         beta = self.beta_schedule(self.round_num)
+
         collector = InteractiveTrajectoryCollector(
             venv=self.venv,
             get_robot_acts=lambda obs: self.bc_trainer.policy.predictSeveral(obs),
