@@ -364,18 +364,10 @@ def generate_trajectories(
     active = np.ones(venv.num_envs, dtype=bool)
     num_demos=0;
     while np.any(active) and num_demos<total_demos_per_round:
+
+        print(f"Number of demos: {num_demos}/{total_demos_per_round}")
+
         acts = get_actions(obs)
-
-        # "Need at least two internal knots" bugfix
-        # print("acts\n", acts)
-
-        # for i, act in enumerate(acts):
-        #     # act (=acts[i,:,:]) is the action of env 1
-        #     # print(f"env-{i}")
-        #     # print(f"act {act}")
-        #     for j, ac in enumerate(act):
-        #         print(f"total time {ac[-1]}")
-        #         # exit(0)
 
         for i in range(len(acts)):
             #acts[i,:,:] is the action of environment i
@@ -385,7 +377,7 @@ def generate_trajectories(
         if(num_demos>=total_demos_per_round): #To avoid dropping partial trajectories
             venv.env_method("forceDone") 
 
-        obs, rews, dones, infos = venv.step(acts) #This will call step_wait of  InteractiveTrajectoryCollector of dagger.py
+        obs, rews, dones, infos = venv.step(acts) #This will call step_wait of InteractiveTrajectoryCollector of dagger.py
 
         # If an environment is inactive, i.e. the episode completed for that
         # environment after `sample_until(trajectories)` was true, then we do
