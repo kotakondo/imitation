@@ -380,7 +380,6 @@ class BC(algo_base.DemonstrationAlgorithm):
             # print(f"acts[:,:,:]=\n{acts[:,:,:]}")
             # print(f"acts[:,:,-1]=\n{acts[:,:,-1]}")
 
-
             distance_matrix= th.zeros(batch_size, num_of_traj_per_action, num_of_traj_per_action, device=used_device); 
             distance_pos_matrix= th.zeros(batch_size, num_of_traj_per_action, num_of_traj_per_action, device=used_device); 
             distance_yaw_matrix= th.zeros(batch_size, num_of_traj_per_action, num_of_traj_per_action, device=used_device); 
@@ -409,7 +408,6 @@ class BC(algo_base.DemonstrationAlgorithm):
                     distance_pos_matrix[:,i,j]=th.mean(th.nn.MSELoss(reduction='none')(expert_pos_i, student_pos_j), dim=1)
                     distance_yaw_matrix[:,i,j]=th.mean(th.nn.MSELoss(reduction='none')(expert_yaw_i, student_yaw_j), dim=1)
                     distance_time_matrix[:,i,j]=th.mean(th.nn.MSELoss(reduction='none')(expert_time_i, student_time_j), dim=1)
-
 
                     #This is simply to delete the trajs from the expert that are repeated
                     expert_pos_j=   acts[:,j,0:self.traj_size_pos_ctrl_pts].float();
@@ -679,7 +677,6 @@ class BC(algo_base.DemonstrationAlgorithm):
 
             # scaling=num_of_traj_per_action*batch_size
 
-
             pos_loss=th.sum(A_matrix*distance_pos_matrix)/num_nonzero_A
             yaw_loss=th.sum(A_matrix*distance_yaw_matrix)/num_nonzero_A
             time_loss=th.sum(A_matrix*distance_time_matrix)/num_nonzero_A
@@ -737,10 +734,7 @@ class BC(algo_base.DemonstrationAlgorithm):
             else:
                 assert False
 
-            
             # print("loss=\n", loss)
-
-            # print("loss=\n ",loss)
 
             ##########################
             stats_dict = dict(
@@ -773,7 +767,6 @@ class BC(algo_base.DemonstrationAlgorithm):
 
             for i in range(num_of_traj_per_action):
                 stats_dict["pos_loss_"+str(i)]=th.nanmean(tmp[:,i]).item()
-
 
             # print(stats_dict)
 
@@ -839,7 +832,6 @@ class BC(algo_base.DemonstrationAlgorithm):
             # prob_loss=(th.sum(col_assigned*th.nn.MSELoss(reduction='none')(student_probs,ones) + col_not_assigned*th.nn.MSELoss(reduction='none')(student_probs,-ones)))/th.numel(student_probs) # This sum has batch_size*num_of_traj_per_action terms
 
             # print(f"prob_loss={prob_loss}")
-
 
     def train(
         self,
