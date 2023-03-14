@@ -362,7 +362,7 @@ def generate_trajectories(
     #
     # To start with, all environments are active.
     active = np.ones(venv.num_envs, dtype=bool)
-    num_demos=0;
+    num_demos=0
     while np.any(active) and num_demos<total_demos_per_round:
 
         print(f"Number of demos: {num_demos}/{total_demos_per_round}")
@@ -377,7 +377,7 @@ def generate_trajectories(
         if(num_demos>=total_demos_per_round): #To avoid dropping partial trajectories
             venv.env_method("forceDone") 
 
-        obs, rews, dones, infos = venv.step(acts) #This will call step_wait of InteractiveTrajectoryCollector of dagger.py
+        obs, rews, dones, infos = venv.step(acts) # this will call step in MyEnvironment.py
 
         # If an environment is inactive, i.e. the episode completed for that
         # environment after `sample_until(trajectories)` was true, then we do

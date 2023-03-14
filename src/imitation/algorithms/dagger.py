@@ -256,6 +256,9 @@ class InteractiveTrajectoryCollector(vec_env.VecEnvWrapper):
         """
         assert self._is_reset, "call .reset() before .step()"
 
+        # debug: I wanna know how this function is called 
+        
+
         actual_acts = np.array(actions)
         #Make the environment record that expert action
         for i in range(self.num_envs):
