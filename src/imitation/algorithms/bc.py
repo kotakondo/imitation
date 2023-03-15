@@ -198,6 +198,7 @@ class BC(algo_base.DemonstrationAlgorithm):
         batch_size: int = 32,
         optimizer_cls: Type[th.optim.Optimizer] = th.optim.Adam,
         optimizer_kwargs: Optional[Mapping[str, Any]] = None,
+        use_lr_scheduler: bool = False,
         ent_weight: float = 1e-3,
         l2_weight: float = 0.0,
         device: Union[str, th.device] = "auto",
@@ -245,6 +246,7 @@ class BC(algo_base.DemonstrationAlgorithm):
         self.only_test_loss = only_test_loss
         self.epsilon_RWTA = epsilon_RWTA
         self.yaw_scaling = getPANTHERparamsAsCppStruct().yaw_scaling
+        self.use_lr_scheduler = use_lr_scheduler
 
         super().__init__(
             demonstrations=demonstrations,
@@ -268,16 +270,21 @@ class BC(algo_base.DemonstrationAlgorithm):
                 # is used by mistake (should use self.optimizer instead).
                 lr_schedule=ConstantLRSchedule(th.finfo(th.float32).max),
             )
+
         self._policy = policy.to(self.device)
         # TODO(adam): make policy mandatory and delete observation/action space params?
         assert self.policy.observation_space == self.observation_space
         assert self.policy.action_space == self.action_space
 
-        optimizer_kwargs = optimizer_kwargs or {}
-        self.optimizer = optimizer_cls(
-            self.policy.parameters(),
-            **optimizer_kwargs,
-        )
+        if self.use_lr_scheduler:
+            print('Use Learning Rate Scheduler')
+            self.optimizer = optimizer_cls(self.policy.parameters())
+            # self.lr_scheduler = th.optim.lr_scheduler.ExponentialLR(self.optimizer, gamma=0.9)
+            self.use_lr_scheduler = th.optim.lr_scheduler.StepLR(self.optimizer, step_size=10, gamma=0.99)  
+        else:
+            print('Use Constant Learning Rate')
+            self.optimizer = optimizer_cls(self.policy.parameters(), **optimizer_kwargs)
+
 
         self.ent_weight = ent_weight
         self.l2_weight = l2_weight
@@ -896,13 +903,15 @@ class BC(algo_base.DemonstrationAlgorithm):
         for batch, stats_dict_it in it:
             loss, stats_dict_loss = self._calculate_loss(batch["obs"], batch["acts"])
 
-            print("pos loss", stats_dict_loss["pos_loss"])
-            print("yaw loss", stats_dict_loss["yaw_loss"])
+            # print("pos loss", stats_dict_loss["pos_loss"])
+            # print("yaw loss", stats_dict_loss["yaw_loss"])
 
             if(self.only_test_loss==False):
                 self.optimizer.zero_grad()
                 loss.backward()
                 self.optimizer.step()
+                if self.use_lr_scheduler:
+                    self.lr_scheduler.step()
 
             # print(f"batch_num={batch_num}")
             # print(f"log_interval={log_interval}")
@@ -931,6 +940,8 @@ class BC(algo_base.DemonstrationAlgorithm):
                     print("Student evaluated!!")
                     stats, traj_descriptors = rollout.rollout_stats(trajs)
                     self.logger.record("batch_size", len(batch["obs"]))
+                    print("lr_shceduler: ", self.lr_scheduler.get_last_lr())
+                    self.logger.record("learning_rate", self.lr_scheduler.get_last_lr()[0])
                     for k, v in stats.items():
                         if "return" in k and "monitor" not in k:
                             self.logger.record("rollout/" + k, v)
