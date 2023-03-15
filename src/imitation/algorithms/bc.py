@@ -280,7 +280,7 @@ class BC(algo_base.DemonstrationAlgorithm):
             print('Use Learning Rate Scheduler')
             self.optimizer = optimizer_cls(self.policy.parameters())
             # self.lr_scheduler = th.optim.lr_scheduler.ExponentialLR(self.optimizer, gamma=0.9)
-            self.use_lr_scheduler = th.optim.lr_scheduler.StepLR(self.optimizer, step_size=10, gamma=0.99)  
+            self.lr_scheduler = th.optim.lr_scheduler.StepLR(self.optimizer, step_size=10, gamma=0.99)  
         else:
             print('Use Constant Learning Rate')
             self.optimizer = optimizer_cls(self.policy.parameters(), **optimizer_kwargs)
