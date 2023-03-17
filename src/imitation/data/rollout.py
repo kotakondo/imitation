@@ -377,7 +377,7 @@ def generate_trajectories(
         if(num_demos>=total_demos_per_round): #To avoid dropping partial trajectories
             venv.env_method("forceDone") 
 
-        obs, rews, dones, infos = venv.step(acts) # this will call step in MyEnvironment.py
+        obs, rews, dones, infos = venv.step(acts) # this will call step() in InteractiveTrajectoryCollector (see dagger.py)
 
         # If an environment is inactive, i.e. the episode completed for that
         # environment after `sample_until(trajectories)` was true, then we do

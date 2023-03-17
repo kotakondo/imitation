@@ -196,6 +196,7 @@ class BC(algo_base.DemonstrationAlgorithm):
         policy: Optional[policies.BasePolicy] = None,
         demonstrations: Optional[algo_base.AnyTransitions] = None,
         batch_size: int = 32,
+        evaluation_data_size: int = 1000,
         optimizer_cls: Type[th.optim.Optimizer] = th.optim.Adam,
         optimizer_kwargs: Optional[Mapping[str, Any]] = None,
         use_lr_scheduler: bool = False,
@@ -243,6 +244,7 @@ class BC(algo_base.DemonstrationAlgorithm):
         self.type_loss=type_loss
         self.weight_prob=weight_prob
         self.batch_size = batch_size
+        self.evaluation_data_size = evaluation_data_size
         self.only_test_loss = only_test_loss
         self.epsilon_RWTA = epsilon_RWTA
         self.yaw_scaling = getPANTHERparamsAsCppStruct().yaw_scaling
@@ -279,12 +281,12 @@ class BC(algo_base.DemonstrationAlgorithm):
         if self.use_lr_scheduler:
             print('Use Learning Rate Scheduler')
             self.optimizer = optimizer_cls(self.policy.parameters())
+            # learning rate decay occurs every mini-batch
             # self.lr_scheduler = th.optim.lr_scheduler.ExponentialLR(self.optimizer, gamma=0.9)
-            self.lr_scheduler = th.optim.lr_scheduler.StepLR(self.optimizer, step_size=10, gamma=0.99)  
+            self.lr_scheduler = th.optim.lr_scheduler.StepLR(self.optimizer, step_size=100, gamma=0.99)  
         else:
             print('Use Constant Learning Rate')
             self.optimizer = optimizer_cls(self.policy.parameters(), **optimizer_kwargs)
-
 
         self.ent_weight = ent_weight
         self.l2_weight = l2_weight
@@ -297,6 +299,12 @@ class BC(algo_base.DemonstrationAlgorithm):
         self._demo_data_loader = algo_base.make_data_loader(
             demonstrations,
             self.batch_size,
+        )
+
+    def set_evaluation_demonstrations(self, demonstrations: algo_base.AnyTransitions) -> None:
+        self._demo_evaluation_data_loader = algo_base.make_data_loader(
+            demonstrations,
+            self.evaluation_data_size,
         )
 
     def _calculate_loss(
@@ -355,33 +363,13 @@ class BC(algo_base.DemonstrationAlgorithm):
             # loss = th.nn.MSELoss(reduction='mean')(pred_acts.float(), acts.float())
             ##########################
 
-            used_device=acts.device;
+            used_device=acts.device
 
             #Expert --> i
             #Student --> j
             num_of_traj_per_action=list(acts.shape)[1] #acts.shape is [batch size, num_traj_action, size_traj]
             num_of_elements_per_traj=list(acts.shape)[2] #acts.shape is [batch size, num_traj_action, size_traj]
             batch_size=list(acts.shape)[0] #acts.shape is [batch size, num_of_traj_per_action, size_traj]
-            
-            #### OLD
-            # distance_matrix_old= th.zeros(batch_size, num_of_traj_per_action, num_of_traj_per_action); 
-            # distance_pos_matrix_old= th.zeros(batch_size, num_of_traj_per_action, num_of_traj_per_action); 
-
-            # for index_batch in range(batch_size):           
-            #     for i in range(num_of_traj_per_action):
-            #         for j in range(num_of_traj_per_action):
-
-            #             expert_i=acts[index_batch,i,:].float();
-            #             expert_pos_i=acts[index_batch,i,0:self.traj_size_pos_ctrl_pts].float();
-
-            #             student_j=pred_acts[index_batch,j,:].float()
-            #             student_pos_j=pred_acts[index_batch,j,0:self.traj_size_pos_ctrl_pts].float()
-
-            #             distance_matrix_old[index_batch,i,j]=th.nn.MSELoss(reduction='mean')(expert_i, student_j)
-            #             distance_pos_matrix_old[index_batch,i,j]=th.nn.MSELoss(reduction='mean')(expert_pos_i, student_pos_j)
-    
-
-            ############################
 
             # acts[:,:,-1]=2*(th.randint(0, 2, acts[:,:,-1].shape, device=used_device) - 0.5*th.ones(acts[:,:,-1].shape, device=used_device))
             # print(f"acts[:,:,:]=\n{acts[:,:,:]}")
@@ -420,7 +408,6 @@ class BC(algo_base.DemonstrationAlgorithm):
                     expert_pos_j=   acts[:,j,0:self.traj_size_pos_ctrl_pts].float();
                     distance_pos_matrix_within_expert[:,i,j]=th.mean(th.nn.MSELoss(reduction='none')(expert_pos_i, expert_pos_j), dim=1)
 
-
             is_repeated=th.zeros(batch_size, num_of_traj_per_action, dtype=th.bool, device=used_device)
 
 
@@ -429,31 +416,10 @@ class BC(algo_base.DemonstrationAlgorithm):
                 for j in range(i+1, num_of_traj_per_action):
                     is_repeated[:,j]=th.logical_or(is_repeated[:,j], th.lt(distance_pos_matrix_within_expert[:,i,j], 1e-7))
 
-            # print(f"expert_time_i={expert_time_i}")
-            # print(f"student_time_j={student_time_j}")
-            # print(f"distance_time_matrix[:,i,j]={distance_time_matrix[:,i,j]}")
-            # print(f"distance_pos_matrix[:,i,j]={distance_pos_matrix[:,i,j]}")
-
-            # print(f"distance_matrix.requires_grad={distance_matrix.requires_grad}")
-            # print(f"distance_pos_matrix.requires_grad={distance_pos_matrix.requires_grad}")
-            # print(f"distance_yaw_matrix.requires_grad={distance_yaw_matrix.requires_grad}")
-            # print(f"distance_time_matrix.requires_grad={distance_time_matrix.requires_grad}")
-
             assert distance_matrix.requires_grad==True
             assert distance_pos_matrix.requires_grad==True
             assert distance_yaw_matrix.requires_grad==True
             assert distance_time_matrix.requires_grad==True
-
-            # th.sum(
-
-            # print("Difference=",distance_matrix-distance_matrix_old)
-            # print("Difference Pos=",distance_pos_matrix-distance_pos_matrix_old)
-
-            ############################
-
-                        # print(f"Expert {i} = ",expert_pos_i)
-            #distance_matrix[:,i,j] is a vector of batch_size elements
-            # print("distance_pos_matrix=\n", distance_pos_matrix)
 
             #Option 1: Solve assignment problem
             A_matrix=th.ones(batch_size, num_of_traj_per_action, num_of_traj_per_action, device=used_device);
@@ -477,7 +443,7 @@ class BC(algo_base.DemonstrationAlgorithm):
                 for index_batch in range(batch_size):         
 
                     # cost_matrix_numpy=distance_pos_matrix_numpy[index_batch,:,:];
-                    cost_matrix=distance_pos_matrix[index_batch,:,:];
+                    cost_matrix=distance_pos_matrix[index_batch,:,:]
                     map2RealRows=np.array(range(num_of_traj_per_action))
                     map2RealCols=np.array(range(num_of_traj_per_action))
 
@@ -493,8 +459,6 @@ class BC(algo_base.DemonstrationAlgorithm):
                     # cost_matrix_numpy=np.delete(cost_matrix_numpy, rows_to_delete, axis=0)
                     cost_matrix=cost_matrix[is_repeated[index_batch,:]==False]   #np.delete(cost_matrix_numpy, rows_to_delete, axis=0)
                     cost_matrix_numpy=cost_matrix.cpu().detach().numpy()
-
-
 
                     #########################################################################
                     #Option 1 (Relaxed) Winner takes all 
@@ -530,7 +494,6 @@ class BC(algo_base.DemonstrationAlgorithm):
                     tmp=th.isclose(should_be_ones, th.ones_like(should_be_ones))
                     assert th.all(tmp)
 
-
                     ### RWTAr: This version ensure that the non-repeated rows sum up to one
                     minimum_per_row, col_indexes =th.min(distance_pos_matrix_batch_tmp[:,:], dim=1) #Select the minimum values
 
@@ -555,34 +518,6 @@ class BC(algo_base.DemonstrationAlgorithm):
                     tmp=th.isclose(should_be_ones, th.ones_like(should_be_ones))
                     assert th.all(tmp)
 
-                    ###Old
-
-                    # A_WTA_matrix[index_batch,indices,:]= (1-self.epsilon_RWTA)*th.ones_like(A_WTA_matrix[index_batch,indices,:])
-
-                    # print(f"A_WTA_matrix HERE=\n{A_WTA_matrix[index_batch,:,:]}")
-
-
-                    # if(index_batch==0):
-                    #     print(f"minimum_per_column={minimum_per_column}")
-                    #     print(f"indices={indices}")
-
-
-                    # tmp=minimum_per_column.repeat(A_WTA_matrix.shape[2],1)
-                    # # print(f"minimum_per_column={minimum_per_column}")
-                    # # print(f"tmp={tmp}")
-
-                    # A_WTA_matrix[index_batch,:,:]=A_WTA_matrix[index_batch,:,:].clone()/tmp
-
-                    # if(index_batch==0):
-                    #     print(f"A_WTA_matrix before=\n{A_WTA_matrix[index_batch,:,:]}")
-
-                    # if(num_diff_traj_expert>1):
-                    #     A_WTA_matrix[index_batch,:,:][A_WTA_matrix[index_batch,:,:]>1] = (self.epsilon_RWTA/(num_diff_traj_expert-1))
-                    # A_WTA_matrix[index_batch,:,:][A_WTA_matrix[index_batch,:,:]==1] = 1-self.epsilon_RWTA
-
-                    # novale=th.sum(A_WTA_matrix[index_batch,:,:])
-                    ######################################
-
                     # print("This should be zero", cost_matrix.cpu().detach().numpy() - cost_matrix_numpy)
 
                     map2RealRows=np.delete(map2RealRows, rows_to_delete, axis=0)
@@ -595,101 +530,11 @@ class BC(algo_base.DemonstrationAlgorithm):
                     for row_index, col_index in zip(row_indexes, col_indexes):
                         A_matrix[index_batch, map2RealRows[row_index], map2RealCols[col_index]]=1
                     
-                    # print(f"distance_pos_matrix_within_expert=\n{distance_pos_matrix_within_expert[index_batch,:,:]}")
-                    # print(f"is_repeated=\n{is_repeated[index_batch,:]}")
-                    # print(f"A_matrix[index_batch,:,:]=\n{A_matrix[index_batch,:,:]}")
-
-                    #########################################################################
-                    #Option 2 Winner takes all: Eq.6 of https://arxiv.org/pdf/2110.05113.pdfs
-                    #########################################################################
-
-                    # print(f"cost matrix.shape={cost_matrix.shape}")
-
-
-                    # 
-
-                    # print(f"cost matrix={cost_matrix}")
-
-                    # for j in range(num_of_traj_per_action): #for each column (student traj)
-
-                    #    # get minimum of the column and assign 1-epsilon to it
-                    #    # print("distance_pos_matrix[:,j]= ", distance_pos_matrix[:,j])
-                    #    (min_value, argmin_index_row)=th.min(cost_matrix[:,j], dim=0) 
-
-                    #    print(f"The minimum of column {j} is {argmin_index_row}")
-
-
-                    #    # print("argmin_index_row= ", argmin_index_row)
-                    #    A_WTA_matrix[index_batch, map2RealRows[argmin_index_row],j]=1-epsilon
-
-                    #    #Assign (epsilon/(num_diff_traj_expert-1)) to the rest of the rows
-                    #    for i in range(cost_matrix.shape[0]):
-                    #       if(i==argmin_index_row):
-                    #         continue
-                    #       A_WTA_matrix[index_batch, map2RealRows[i],j]=(epsilon/(num_diff_traj_expert-1))
-
-
-                # print(f"\n\n\n=======================================")
-                # print(f"distance_pos_matrix=\n{distance_pos_matrix[0,:,:]*10000}\n")
-                # print(f"is_repeated=\n{is_repeated[0,:]}\n")
-                # print(f"A_matrix=\n{A_matrix[0,:,:]}\n")
-                # print(f"A_WTA_matrix=\n{A_WTA_matrix[0,:,:]}")
-                # print(f"=====================================")
-                # print(f"=====================================")
-
-                # col_assigned=th.round(th.sum(A_matrix, dim=1)); #Example: col_assigned[2,:,:]=[0 0 1 0 1 0] means that the 3rd and 5th columns (of the 3rd batch) have been assigned
-                # col_not_assigned=(~(col_assigned.bool())).float();
-                # col_assigned=col_assigned.float()
-
-                #Option 3: simply the identity matrix
-                # x = th.eye(num_of_traj_per_action)
-                # x = x.reshape((1, num_of_traj_per_action, num_of_traj_per_action))
-                # A_matrix = x.repeat(batch_size, 1, 1)
-
-                # print("A_matrix=\n", A_matrix)
-
-                #########################################################################
-                #Option 2 Winner takes all: Eq.6 of https://arxiv.org/pdf/2110.05113.pdfs
-                #########################################################################
-                
-                # A_WTA_matrix=(epsilon/(num_of_traj_per_action-1)) * A_WTA_matrix;
-                # for index_batch in range(batch_size): 
-                #    for j in range(num_of_traj_per_action): #for each column (student traj)
-                #        # get minimum of the column and assign 1-epsilon to it
-                #        # print("distance_pos_matrix[:,j]= ", distance_pos_matrix[:,j])
-                #        (min_value, argmin_index_row)=th.min(distance_pos_matrix[index_batch,:,j], dim=0) 
-                #        # print("argmin_index_row= ", argmin_index_row)
-                #        A_WTA_matrix[index_batch, argmin_index_row,j]=1-epsilon
-
-
-
-
-            # print(f"Using epsilon={self.epsilon_RWTA}")
-
-
-            #each of the terms below are matrices of shape (batch_size)x(num_of_traj_per_action)
-
-            # print(f"A_matrix={A_matrix}")
-
-            # norm_constant=(1/(batch_size*num_of_traj_per_action))
             num_nonzero_A=th.count_nonzero(A_matrix); #This is the same as the number of distinct trajectories produced by the expert
-
-            # print(f"num_nonzero_A={num_nonzero_A}")
-            # print(f"num_of_traj_per_action*batch_size={num_of_traj_per_action*batch_size}")
-
-
-            # #Note that     num_of_traj_per_action*batch_size == num_nonzero_A == columns of A*batch_size
-            # assert (distance_matrix.shape)[1]==num_of_traj_per_action, "Wrong shape!"
-            # assert num_nonzero_A==num_of_traj_per_action*batch_size, "These shold be the same (since A has rows<=columns)"
-
-            # scaling=num_of_traj_per_action*batch_size
 
             pos_loss=th.sum(A_matrix*distance_pos_matrix)/num_nonzero_A
             yaw_loss=th.sum(A_matrix*distance_yaw_matrix)/num_nonzero_A
             time_loss=th.sum(A_matrix*distance_time_matrix)/num_nonzero_A
-
-            # print(f"pos_loss=\n{pos_loss*10000}")
-            # print(f"num_nonzero_A={num_nonzero_A}")
 
             pos_loss_RWTAr=th.sum(A_RWTAr_matrix*distance_pos_matrix)/num_nonzero_A
             yaw_loss_RWTAr=th.sum(A_RWTAr_matrix*distance_yaw_matrix)/num_nonzero_A
@@ -713,21 +558,16 @@ class BC(algo_base.DemonstrationAlgorithm):
             assert yaw_loss_RWTAc.requires_grad==True
             assert time_loss_RWTAc.requires_grad==True
 
-            # assert A_WTA_matrix.requires_grad==True
-            # assert prob_loss.requires_grad==True
-
             loss_Hungarian = time_loss
             loss_RWTAr = time_loss_RWTAr
             loss_RWTAc = time_loss_RWTAc
 
             if not self.make_yaw_NN:
-                print("pos is used in loss")
                 loss_Hungarian += pos_loss 
                 loss_RWTAr += pos_loss_RWTAr
                 loss_RWTAc += pos_loss_RWTAc
 
-            if(self.use_closed_form_yaw_student==False):
-                print("yaw is used in loss")
+            if not self.use_closed_form_yaw_student:
                 loss_Hungarian += yaw_loss
                 loss_RWTAr += yaw_loss_RWTAr
                 loss_RWTAc += yaw_loss_RWTAc
@@ -741,13 +581,10 @@ class BC(algo_base.DemonstrationAlgorithm):
             else:
                 assert False
 
-            # print("loss=\n", loss)
-
-            ##########################
             stats_dict = dict(
-                loss=loss.item(),
-                loss_RWTAr=loss_RWTAr.item(),
-                loss_RWTAc=loss_RWTAc.item(),
+                # loss=loss.item(),
+                # loss_RWTAr=loss_RWTAr.item(),
+                # loss_RWTAc=loss_RWTAc.item(),
                 loss_Hungarian=loss_Hungarian.item(),
                 pos_loss=pos_loss.item(),
                 yaw_loss=yaw_loss.item(),
@@ -756,89 +593,21 @@ class BC(algo_base.DemonstrationAlgorithm):
                 # percent_right_values=percent_right_values.item(),
             )
 
+            ##
+            ## Compute the loss for each trajectory 
+            ##
 
-            # print(A_matrix*distance_pos_matrix)
+            # tmp=th.sum(A_matrix*distance_pos_matrix, dim=2)
+            # tmp[tmp==0.0]=th.nan
 
-            tmp=th.sum(A_matrix*distance_pos_matrix, dim=2)
+            # for index_batch in range(batch_size):
+            #     my_sorted, indices=th.sort(tmp[index_batch,:], dim=0) #Note that if there is nans, they will be at the end of my_sorted
+            #     tmp[index_batch,:]=my_sorted
 
-            tmp[tmp==0.0]=th.nan
-
-            # print(f"tmp before sorting=\n{tmp}")
-
-            for index_batch in range(batch_size):
-                my_sorted, indices=th.sort(tmp[index_batch,:], dim=0) #Note that if there is nans, they will be at the end of my_sorted
-                # print(f"my_sorted={my_sorted}")
-                tmp[index_batch,:]=my_sorted
-
-            # print(f"tmp after sorting=\n{tmp}")
-
-            for i in range(num_of_traj_per_action):
-                stats_dict["pos_loss_"+str(i)]=th.nanmean(tmp[:,i]).item()
-
-            # print(stats_dict)
+            # for i in range(num_of_traj_per_action):
+            #     stats_dict["pos_loss_"+str(i)]=th.nanmean(tmp[:,i]).item()
 
         return loss, stats_dict
-
-            # OLD STUFF
-            # print("A_matrix=\n", A_matrix)
-            # print(f"col_assigned=\n {col_assigned}")
-            # print(f"col_not_assigned=\n {col_not_assigned}")
-
-            # print("distance_pos_matrix=\n", distance_pos_matrix)
-
-            # print(f"===============")
-            # print(f"distance_pos_matrix.device={distance_pos_matrix.device}")
-            # print(f"A_matrix.device={A_matrix.device}")
-            # print(f"===============")
-            # print(f"student_probs.device= {student_probs.device}")
-            # student_probs=pred_acts[:,:,-1]
-            # ones=th.ones(student_probs.shape, device=used_device)
-            # print(f"tmp.device= {tmp.device}")
-            # print(f"col_assigned.device= {col_assigned.device}")
-            #Elementwise mult, see https://stackoverflow.com/questions/53369667/pytorch-element-wise-product-of-vectors-matrices-tensors
-            # print("===========================")
-            # print("student_probs=\n", student_probs)
-            # print("col_assigned=\n", col_assigned)
-            # print("uno=\n", col_assigned*th.nn.MSELoss(reduction='none')(student_probs,tmp))
-            # print("dos=\n", col_not_assigned*th.nn.MSELoss(reduction='none')(student_probs,-tmp))
-            # assert (distance_matrix.shape)[0]==(student_probs.shape)[0], f"Wrong shape!, distance_matrix.shape={distance_matrix.shape}, student_probs.shape={student_probs.shape}"
-            # assert (distance_matrix.shape)[1]==(student_probs.shape)[1], f"Wrong shape!, distance_matrix.shape={distance_matrix.shape}, student_probs.shape={student_probs.shape}"
-
-            #col_assigned has elements in [0,1](False/True)
-            # actual_probs = 2*col_assigned.float() - 1*th.ones(col_assigned.shape, device=used_device) #This forces all the elements to be in [-1,1]
-            
-            ######
-            # ones=th.ones(student_probs.shape, device=used_device);
-            # actual_probs01=col_assigned.float()
-            # student_probs01 = (student_probs + ones)/2 
-            # print(f"actual_probs01={actual_probs01}")
-            # print(f"student_probs01={student_probs01}")
-            # prob_loss = -th.mean(actual_probs01*th.log(student_probs01) + (ones-actual_probs01)*th.log(ones-student_probs01))
-            # print(prob_loss)  #https://towardsdatascience.com/understanding-binary-cross-entropy-log-loss-a-visual-explanation-a3ac6025181a
-            ####
-
-
-            # sign_student_probs=th.sign(student_probs)
-            # diff=sign_student_probs-actual_probs;
-            # percent_right_values=(th.numel(diff)-th.count_nonzero(diff))/(th.numel(diff))
-
-            # print(f"tmp={tmp}")
-            # print(f"A_matrix=\n{A_matrix[0,:,:]}")
-            # print(f"num_nonzero_A={th.count_nonzero(A_matrix[0,:,:])}")
-
-            # print("col_assigned=\n", col_assigned)
-            # print("col_not_assigned=\n", col_not_assigned)
-            # print("student_probs=\n", student_probs)
-            # print("loss col_assigned=\n", (col_assigned*th.nn.MSELoss(reduction='none')(student_probs,ones)))
-            # print("loss col_not_assigned=\n",(col_not_assigned*th.nn.MSELoss(reduction='none')(student_probs,-ones)))
-            # print("loss assignment=\n",col_assigned*th.nn.MSELoss(reduction='none')(student_probs,ones) + col_not_assigned*th.nn.MSELoss(reduction='none')(student_probs,-ones))
-
-
-            # pos_yaw_time_loss=th.sum(A_matrix*distance_matrix)/num_nonzero_A
-            # prob_loss=th.nn.MSELoss(reduction='mean')(student_probs, actual_probs)
-            # prob_loss=(th.sum(col_assigned*th.nn.MSELoss(reduction='none')(student_probs,ones) + col_not_assigned*th.nn.MSELoss(reduction='none')(student_probs,-ones)))/th.numel(student_probs) # This sum has batch_size*num_of_traj_per_action terms
-
-            # print(f"prob_loss={prob_loss}")
 
     def train(
         self,
@@ -881,6 +650,11 @@ class BC(algo_base.DemonstrationAlgorithm):
                 even if `.train()` logged to Tensorboard previously. Has no practical
                 effect if `.train()` is being called for the first time.
         """
+
+        ##
+        ## Load data
+        ##
+
         it = EpochOrBatchIteratorWithProgress(
             self._demo_data_loader,
             n_epochs=n_epochs,
@@ -890,48 +664,85 @@ class BC(algo_base.DemonstrationAlgorithm):
             progress_bar_visible=progress_bar,
         )
 
+        ##
+        ## Initialization
+        ##
+
         if reset_tensorboard:
             self.tensorboard_step = 0
-
         batch_num = 0
 
-        if(self.only_test_loss):
+        ##
+        ## use only the final policy
+        ##
+
+        if self.only_test_loss:
             final_policy_path=re.sub(r'intermediate.*.pt', 'final_policy.pt', save_full_policy_path)   #save_full_policy_path.replace("intermediate", "final")
             print(f"Going to load policy {final_policy_path}")
             self._policy=reconstruct_policy(final_policy_path)
 
+        ##
+        ## Training loop
+        ##
+
         for batch, stats_dict_it in it:
+
+            ##
+            ## training data set
+            ##
+
             loss, stats_dict_loss = self._calculate_loss(batch["obs"], batch["acts"])
 
-            # print("pos loss", stats_dict_loss["pos_loss"])
-            # print("yaw loss", stats_dict_loss["yaw_loss"])
+            ##
+            ## Update policy
+            ##
 
             if(self.only_test_loss==False):
                 self.optimizer.zero_grad()
                 loss.backward()
                 self.optimizer.step()
                 if self.use_lr_scheduler:
+                    # learning rate decay occurs every minibatch
                     self.lr_scheduler.step()
 
-            # print(f"batch_num={batch_num}")
-            # print(f"log_interval={log_interval}")
+            ##
+            ## Logging
+            ##
 
             if batch_num % log_interval == 0:
+
+                # training data set
+
                 for stats in [stats_dict_it, stats_dict_loss]:
                     for k, v in stats.items():
                         self.logger.record(f"bc/{k}", v)
+
+                # evaluation data set
+
+                for evaluation_batch in self._demo_evaluation_data_loader:
+                    _ , evaluatoin_stats_dict_loss = self._calculate_loss(evaluation_batch["obs"], evaluation_batch["acts"])
+                    for k, v in evaluatoin_stats_dict_loss.items():
+                        self.logger.record(f"bc/evaluation_{k}", v)
+
+                # save policy
 
                 if(save_full_policy_path!=None):
                     index = save_full_policy_path.find('.pt')
                     tmp = save_full_policy_path[:index] + "_log" + str(math.floor(batch_num/log_interval)) + save_full_policy_path[index:]
                     self.save_policy(tmp)
+                
                 # TODO(shwang): Maybe instead use a callback that can be shared between
                 #   all algorithms' `.train()` for generating rollout stats.
                 #   EvalCallback could be a good fit:
                 #   https://stable-baselines3.readthedocs.io/en/master/guide/callbacks.html#evalcallback
-                if log_rollouts_venv is not None and log_rollouts_n_episodes > 0:
-                    print("Going to evaluate student!!")
+                
+                ##
+                ## Evaluate policy
+                ##
 
+                if log_rollouts_venv is not None and log_rollouts_n_episodes > 0:
+                   
+                    print("Going to evaluate student!!")
                     trajs = rollout.generate_trajectories(
                         self.policy,
                         log_rollouts_venv,
@@ -939,13 +750,25 @@ class BC(algo_base.DemonstrationAlgorithm):
                     )
                     print("Student evaluated!!")
                     stats, traj_descriptors = rollout.rollout_stats(trajs)
-                    self.logger.record("batch_size", len(batch["obs"]))
+                    # self.logger.record("batch_size", len(batch["obs"]))
+
+                    ##
+                    ## update learning rate
+                    ##
+
                     print("lr_shceduler: ", self.lr_scheduler.get_last_lr())
                     self.logger.record("learning_rate", self.lr_scheduler.get_last_lr()[0])
+                    
+                    ##
+                    ## Log stats
+                    ##
+
                     for k, v in stats.items():
                         if "return" in k and "monitor" not in k:
                             self.logger.record("rollout/" + k, v)
+                
                 self.logger.dump(self.tensorboard_step)
+            
             batch_num += 1
             self.tensorboard_step += 1
 

@@ -248,6 +248,7 @@ class InteractiveTrajectoryCollector(vec_env.VecEnvWrapper):
         where every saved action is the expert action, regardless of whether the
         robot action was used during that timestep.
 
+        This funciton is called when step() is called (https://stable-baselines3.readthedocs.io/en/master/_modules/stable_baselines3/common/vec_env/base_vec_env.html)
         Args:
             actions: the _intended_ demonstrator/expert actions for the current
                 state. This will be executed with probability `self.beta`.
@@ -256,10 +257,8 @@ class InteractiveTrajectoryCollector(vec_env.VecEnvWrapper):
         """
         assert self._is_reset, "call .reset() before .step()"
 
-        # debug: I wanna know how this function is called 
-        
-
         actual_acts = np.array(actions)
+        
         #Make the environment record that expert action
         for i in range(self.num_envs):
             self.venv.env_method("saveInBag", actual_acts[i],  indices=[i]) 
@@ -297,6 +296,8 @@ class InteractiveTrajectoryCollector(vec_env.VecEnvWrapper):
 
         Stores the transition, and saves trajectory as demo once complete.
 
+        This function is called when .step() is called. (ref: https://stable-baselines3.readthedocs.io/en/master/_modules/stable_baselines3/common/vec_env/base_vec_env.html)
+
         Returns:
             Observation, reward, dones (is terminal?) and info dict.
         """
@@ -315,7 +316,7 @@ class InteractiveTrajectoryCollector(vec_env.VecEnvWrapper):
             ############### (jtorde) remove the cases where the expert failed (returned nans), and the corresponding next observation
             #Note that, the trajectory is terminated when the expert fails, then the nans will only be in the last action
             index_last_act=traj.acts.shape[0]-1
-            has_nans=np.isnan(np.sum(traj.acts[index_last_act,:,:]));
+            has_nans=np.isnan(np.sum(traj.acts[index_last_act,:,:]))
             if(has_nans and traj.acts.shape[0]==1):
                 continue #The expert failed the first time --> trajectory is not valid (it has only one action, which has nans)
             elif(has_nans):
@@ -379,6 +380,7 @@ class DAggerTrainer(base.BaseImitationAlgorithm):
         *,
         venv: vec_env.VecEnv,
         scratch_dir: types.AnyPath,
+        eval_dir: types.AnyPath,
         beta_schedule: Callable[[int], float] = None,
         bc_trainer: bc.BC,
         custom_logger: Optional[logger.HierarchicalLogger] = None,
@@ -401,6 +403,7 @@ class DAggerTrainer(base.BaseImitationAlgorithm):
             beta_schedule = LinearBetaSchedule(15)
         self.beta_schedule = beta_schedule
         self.scratch_dir = pathlib.Path(scratch_dir)
+        self.eval_dir = pathlib.Path(eval_dir)
         self.venv = venv
         self.round_num = 0
         self._last_loaded_round = -1
@@ -435,6 +438,10 @@ class DAggerTrainer(base.BaseImitationAlgorithm):
     def batch_size(self) -> int:
         return self.bc_trainer.batch_size
 
+    @property
+    def evaluation_data_size(self) -> int:
+        return self.bc_trainer.evaluation_data_size
+
     #Function added by @Andrea
     def load_demos_at_round(self, round_num, augmented_demos=True):
         round_dir = self._demo_dir_path_for_round(round_num)
@@ -456,12 +463,30 @@ class DAggerTrainer(base.BaseImitationAlgorithm):
         logging.info(f"Loaded {len(self._all_demos)} total")
         demo_transitions = rollout.flatten_trajectories(self._all_demos)
         ##Added by jtorde
-        total_number_pairs=0;
+        total_number_pairs=0
         for demo in self._all_demos:
             total_number_pairs+=len(demo.acts)
         print(Style.BRIGHT+Fore.MAGENTA+f"Loaded {len(self._all_demos)} demos in total ({total_number_pairs} pair expert action/obs). Will use {int(total_number_pairs/self.batch_size)} batches (batch_size={self.batch_size})"+Style.RESET_ALL)
         ##################
         return demo_transitions, num_demos_by_round
+
+    # Function added by @Kota
+    def _load_evaluation_demos(self):
+        """Load demonstrations from the evaluation data set"""
+        round_dir = self._evaluation_demo_dir()
+        demo_paths = self._get_demo_paths(round_dir)
+        print(Style.BRIGHT+Fore.MAGENTA+"Loading evaluation data ", round_dir, Style.RESET_ALL)
+        all_evaluation_demos = []
+        all_evaluation_demos.extend(_load_trajectory(p) for p in demo_paths)
+        demo_transitions = rollout.flatten_trajectories(all_evaluation_demos)
+        evaluation_data_loader = th_data.DataLoader(
+                demo_transitions,
+                self.evaluation_data_size,
+                drop_last=True,
+                shuffle=True,
+                collate_fn=types.transitions_collate_fn,
+            )
+        return evaluation_data_loader
 
     def _get_demo_paths(self, round_dir):
         return [
@@ -474,6 +499,9 @@ class DAggerTrainer(base.BaseImitationAlgorithm):
         if round_num is None:
             round_num = self.round_num
         return self.scratch_dir / "demos" / f"round-{round_num:03d}"
+
+    def _evaluation_demo_dir(self) -> pathlib.Path:
+        return self.eval_dir / "demos" / "round-000"
 
     def _try_load_demos(self) -> None:
         """Load the dataset for this round into self.bc_trainer as a DataLoader."""
@@ -508,7 +536,11 @@ class DAggerTrainer(base.BaseImitationAlgorithm):
                 shuffle=True,
                 collate_fn=types.transitions_collate_fn,
             )
+
+            # load data for training set
             self.bc_trainer.set_demonstrations(data_loader)
+            # load data for evaluation set
+            self.bc_trainer.set_evaluation_demonstrations(self._load_evaluation_demos())
             self._last_loaded_round = self.round_num
 
     def extend_and_update(self, bc_train_kwargs: Optional[Mapping] = None) -> int:
@@ -715,16 +747,6 @@ class SimpleDAggerTrainer(DAggerTrainer):
                 collector = self.get_trajectory_collector()
                 round_episode_count = 0
                 round_timestep_count = 0
-
-                # sample_until = rollout.make_sample_until(
-                #     min_timesteps=max(n_traj_per_round, self.batch_size),
-                #     min_episodes=rollout_round_min_episodes,
-                # )
-                #sample_until=rollout.make_min_episodes(n_traj_per_round)
-
-                # print(f"min_timesteps={max(n_traj_per_round, self.batch_size)}")
-                # print(f"min_episodes={rollout_round_min_episodes}")
-                # exit()
 
                 trajectories = rollout.generate_trajectories(
                     policy=self.expert_policy,
