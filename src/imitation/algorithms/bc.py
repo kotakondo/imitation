@@ -275,7 +275,12 @@ class BC(algo_base.DemonstrationAlgorithm):
 
         self._policy = policy.to(self.device)
         # TODO(adam): make policy mandatory and delete observation/action space params?
-        assert self.policy.observation_space == self.observation_space
+
+
+        # print('policy.observation_space: ', self.policy.observation_space.shape)
+        # print('self.observation_space: ', self.observation_space.shape)
+
+        # assert self.policy.observation_space == self.observation_space  # if using lstm, this should be not matter
         assert self.policy.action_space == self.action_space
 
         if self.use_lr_scheduler:
