@@ -290,7 +290,7 @@ class BC(algo_base.DemonstrationAlgorithm):
             self.optimizer = optimizer_cls(self.policy.parameters())
             # learning rate decay occurs every mini-batch
             # self.lr_scheduler = th.optim.lr_scheduler.ExponentialLR(self.optimizer, gamma=0.9)
-            self.lr_scheduler = th.optim.lr_scheduler.StepLR(self.optimizer, step_size=100, gamma=0.99)  
+            self.lr_scheduler = th.optim.lr_scheduler.StepLR(self.optimizer, step_size=100, gamma=0.999)  
         else:
             print('Use Constant Learning Rate')
             self.optimizer = optimizer_cls(self.policy.parameters(), **optimizer_kwargs)
