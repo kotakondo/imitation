@@ -693,6 +693,7 @@ class BC(algo_base.DemonstrationAlgorithm):
         ##
 
         if self.use_lstm:
+            th.backends.cudnn.enabled=False # see https://github.com/pytorch/captum/issues/564
             self.policy.lstm.register_forward_hook(self.get_activation('lstm'))
 
         ##
@@ -808,7 +809,7 @@ class BC(algo_base.DemonstrationAlgorithm):
     def hook(self, model, input, output):
         """ to recoerd the lstm hidden state
         ref: test_lstm_pt.py & https://discuss.pytorch.org/t/extract-features-from-layer-of-submodule-of-a-model/20181/12"""
-        self.activation[self.name] = output[0].detach().numpy()
+        self.activation[self.name] = output[0].cpu().detach().numpy()
 
     def save_policy(self, policy_path: types.AnyPath) -> None:
         """Save policy to a path. Can be reloaded by `.reconstruct_policy()`.
