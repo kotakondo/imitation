@@ -248,8 +248,10 @@ class BC(algo_base.DemonstrationAlgorithm):
         self.only_test_loss = only_test_loss
         self.epsilon_RWTA = epsilon_RWTA
         self.yaw_scaling = getPANTHERparamsAsCppStruct().yaw_scaling
+        self.use_lstm = getPANTHERparamsAsCppStruct().use_lstm
         self.use_lr_scheduler = use_lr_scheduler
-
+        self.activation = {}
+        
         super().__init__(
             demonstrations=demonstrations,
             custom_logger=custom_logger,
@@ -687,6 +689,13 @@ class BC(algo_base.DemonstrationAlgorithm):
             self._policy=reconstruct_policy(final_policy_path)
 
         ##
+        ## Logging for LSTM
+        ##
+
+        if self.use_lstm:
+            self.policy.lstm.register_forward_hook(self.get_activation('lstm'))
+
+        ##
         ## Training loop
         ##
 
@@ -716,20 +725,33 @@ class BC(algo_base.DemonstrationAlgorithm):
 
             if batch_num % log_interval == 0:
 
-                # training data set
+                ##    
+                ## training data set logger
+                ##    
 
                 for stats in [stats_dict_it, stats_dict_loss]:
                     for k, v in stats.items():
                         self.logger.record(f"bc/{k}", v)
 
-                # evaluation data set
+                ##    
+                ## evaluation data set logger
+                ##    
 
                 for evaluation_batch in self._demo_evaluation_data_loader:
                     _ , evaluatoin_stats_dict_loss = self._calculate_loss(evaluation_batch["obs"], evaluation_batch["acts"])
                     for k, v in evaluatoin_stats_dict_loss.items():
                         self.logger.record(f"bc/evaluation_{k}", v)
 
-                # save policy
+                ##
+                ## LSTM Logging
+                ##
+
+                if self.use_lstm:
+                    self.logger.record(f"lstm/h_norm", np.linalg.norm(self.activation['lstm'][-1]))
+
+                ##    
+                ## save policy
+                ##    
 
                 if(save_full_policy_path!=None):
                     index = save_full_policy_path.find('.pt')
@@ -776,6 +798,17 @@ class BC(algo_base.DemonstrationAlgorithm):
             
             batch_num += 1
             self.tensorboard_step += 1
+
+    def get_activation(self, name):
+        """ to recoerd the lstm hidden state
+        ref: test_lstm_pt.py & https://discuss.pytorch.org/t/extract-features-from-layer-of-submodule-of-a-model/20181/12"""
+        self.name = name
+        return self.hook
+
+    def hook(self, model, input, output):
+        """ to recoerd the lstm hidden state
+        ref: test_lstm_pt.py & https://discuss.pytorch.org/t/extract-features-from-layer-of-submodule-of-a-model/20181/12"""
+        self.activation[self.name] = output[0].detach().numpy()
 
     def save_policy(self, policy_path: types.AnyPath) -> None:
         """Save policy to a path. Can be reloaded by `.reconstruct_policy()`.
