@@ -249,6 +249,7 @@ class BC(algo_base.DemonstrationAlgorithm):
         self.epsilon_RWTA = epsilon_RWTA
         self.yaw_scaling = getPANTHERparamsAsCppStruct().yaw_scaling
         self.use_lstm = getPANTHERparamsAsCppStruct().use_lstm
+        self.yaw_loss_weight = getPANTHERparamsAsCppStruct().yaw_loss_weight
         self.use_lr_scheduler = use_lr_scheduler
         self.activation = {}
         
@@ -594,7 +595,7 @@ class BC(algo_base.DemonstrationAlgorithm):
                 # loss_RWTAc=loss_RWTAc.item(),
                 loss_Hungarian=loss_Hungarian.item(),
                 pos_loss=pos_loss.item(),
-                yaw_loss=yaw_loss.item(),
+                yaw_loss= self.yaw_loss_weight*yaw_loss.item(),
                 # prob_loss=prob_loss.item(),
                 time_loss=time_loss.item(),
                 # percent_right_values=percent_right_values.item(),
