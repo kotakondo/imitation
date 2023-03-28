@@ -733,6 +733,9 @@ class BC(algo_base.DemonstrationAlgorithm):
 
                 for stats in [stats_dict_it, stats_dict_loss]:
                     for k, v in stats.items():
+                        # deweight yaw loss
+                        if k == "yaw_loss":
+                            v = v / self.yaw_loss_weight
                         self.logger.record(f"bc/{k}", v)
 
                 ##    
