@@ -259,6 +259,7 @@ def _policy_to_callable(
     policy: AnyPolicy,
     venv: VecEnv,
     deterministic_policy: bool,
+    computation_time_verbose: bool = False,
 ) -> PolicyCallable:
     """Converts any policy-like object into a function from observations to actions."""
     if policy is None:
@@ -270,12 +271,21 @@ def _policy_to_callable(
     # elif isinstance(policy, (ExpertPolicy,StudentPolicy)): #to avoid importing ExpertPolicy and StudentPolicy in this file
     elif hasattr(policy, 'predictSeveral'):
 
-        def get_actions(states):
-            acts = policy.predictSeveral(  # pytype: disable=attribute-error
-                states,
-                deterministic=deterministic_policy,
-            )
-            return acts    
+        if computation_time_verbose:
+            def get_actions(states):
+                acts, mean_computation_time = policy.predictSeveralWithComputationTimeVerbose(  # pytype: disable=attribute-error
+                    states,
+                    deterministic=deterministic_policy,
+                )
+                return acts, mean_computation_time
+
+        else:
+            def get_actions(states):
+                acts = policy.predictSeveral(  # pytype: disable=attribute-error
+                    states,
+                    deterministic=deterministic_policy,
+                )
+                return acts    
 
     elif isinstance(policy, (BaseAlgorithm, BasePolicy)):
         # There's an important subtlety here: BaseAlgorithm and BasePolicy
@@ -377,7 +387,13 @@ def generate_trajectories(
         if(num_demos>=total_demos_per_round): #To avoid dropping partial trajectories
             venv.env_method("forceDone") 
 
-        obs, rews, dones, infos = venv.step(acts) # this will call step() in InteractiveTrajectoryCollector (see dagger.py)
+        ##
+        ## get obs, rewards, dones, infos
+        ## this will call step() in InteractiveTrajectoryCollector (see dagger.py)
+        ## and will eventually call step_wait() in InteractiveTrajectoryCollector (see dagger.py)
+        ##
+
+        obs, rews, dones, infos = venv.step(acts) 
 
         # If an environment is inactive, i.e. the episode completed for that
         # environment after `sample_until(trajectories)` was true, then we do
@@ -430,6 +446,176 @@ def generate_trajectories(
 
     return trajectories
 
+def generate_trajectories_for_benchmark(
+    policy: AnyPolicy,
+    venv: VecEnv, #Note that a InteractiveTrajectoryCollector is also valid here
+    sample_until: GenTrajTerminationFn = None, #not used anymore
+    *,
+    deterministic_policy: bool = False,
+    rng: np.random.RandomState = np.random,
+    total_demos_per_round = float("inf"),
+) -> Sequence[types.TrajectoryWithRew]:
+    """
+    Changed from generate_trajectories() to generate trajectories for benchmarking
+    
+    Generate trajectory dictionaries from a policy and an environment.
+
+    Args:
+        policy: Can be any of the following:
+            1) A stable_baselines3 policy or algorithm trained on the gym environment.
+            2) A Callable that takes an ndarray of observations and returns an ndarray
+            of corresponding actions.
+            3) None, in which case actions will be sampled randomly.
+        venv: The vectorized environments to interact with.
+        sample_until: A function determining the termination condition.
+            It takes a sequence of trajectories, and returns a bool.
+            Most users will want to use one of `min_episodes` or `min_timesteps`.
+        deterministic_policy: If True, asks policy to deterministically return
+            action. Note the trajectories might still be non-deterministic if the
+            environment has non-determinism!
+        rng: used for shuffling trajectories.
+
+    Returns:
+        Sequence of trajectories, satisfying `sample_until`. Additional trajectories
+        may be collected to avoid biasing process towards short episodes; the user
+        should truncate if required.
+    """
+
+    ##
+    ## Convert policy to a callable.
+    ##
+
+    computation_time_verbose = True
+    get_actions = _policy_to_callable(policy, venv, deterministic_policy, computation_time_verbose=computation_time_verbose)
+
+    ##
+    ## Initilaze trajectory list to collect rollout tuples.
+    ##
+
+    trajectories = []
+
+    ##
+    ## accumulator for incomplete trajectories
+    ##
+
+    trajectories_accum = TrajectoryAccumulator()
+    f_obs = venv.reset()
+    
+    for env_idx, ob in enumerate(f_obs):
+        # Seed with first obs only. Inside loop, we'll only add second obs from
+        # each (s,a,r,s') tuple, under the same "obs" key again. That way we still
+        # get all observations, but they're not duplicated into "next obs" and
+        # "previous obs" (this matters for, e.g., Atari, where observations are
+        # really big).
+        trajectories_accum.add_step(dict(obs=ob), env_idx)
+
+    # Now, we sample until `sample_until(trajectories)` is true.
+    # If we just stopped then this would introduce a bias towards shorter episodes,
+    # since longer episodes are more likely to still be active, i.e. in the process
+    # of being sampled from. To avoid this, we continue sampling until all epsiodes
+    # are complete.
+    #
+    # To start with, all environments are active.
+    active = np.ones(venv.num_envs, dtype=bool)
+    num_demos=0
+    total_obs_avoidance_failure=0
+    total_trans_dyn_limit_failure=0
+    total_yaw_dyn_limit_failure=0
+    total_failure=0
+    while np.any(active) and num_demos<total_demos_per_round:
+
+        if computation_time_verbose:
+            f_acts, mean_computation_time = get_actions(f_obs)
+        else:
+            f_acts = get_actions(f_obs)
+
+        print(f"Number of demos: {num_demos}/{total_demos_per_round}")
+
+        is_nan_action = False
+        for i in range(len(f_acts)): #loop over all the environments
+            # f_acts[i,:,:] is the action of environment i
+            if(np.isnan(np.sum(f_acts[i,:,:]))==False):
+                num_demos+=1
+            else:
+                total_failure+=1
+                is_nan_action = True
+
+        if(num_demos>=total_demos_per_round): #To avoid dropping partial trajectories
+            venv.env_method("forceDone") 
+
+        ##
+        ## get obs, rewards, dones, infos
+        ## this will call step() in InteractiveTrajectoryCollector (see dagger.py)
+        ## and will eventually call step_wait() in InteractiveTrajectoryCollector (see dagger.py)
+        ##
+        
+        obs, rews, dones, infos = venv.step(f_acts) # in here it will choose the best action out of f_acts and calculate rewards for the best action
+
+        ##
+        ## calculate the total number of obs_avoidance_failure and dyn_limit_failure
+        ##
+
+        for i in range(len(infos)):
+            if infos[i]["obst_avoidance_violation"]:
+                total_obs_avoidance_failure+=1
+            if infos[i]["trans_dyn_lim_violation"]:
+                total_trans_dyn_limit_failure+=1
+            if infos[i]["yaw_dyn_lim_violation"]:
+                total_yaw_dyn_limit_failure+=1
+            if not is_nan_action and (infos[i]["obst_avoidance_violation"] or infos[i]["trans_dyn_lim_violation"] or infos[i]["yaw_dyn_lim_violation"]):
+                total_failure+=1
+
+        # If an environment is inactive, i.e. the episode completed for that
+        # environment after `sample_until(trajectories)` was true, then we do
+        # *not* want to add any subsequent trajectories from it. We avoid this
+        # by just making it never done.
+        # (jtorde) But note that that env will be reset and will keep being called
+        # (jtorde) and more demos will keep being saved in the InteractiveTrajectoryCollector (venv variable in this function)-->step_wait function (see dagger.py)
+        # Note that only the environments that have done==True are the ones that are finished in add_steps_and_auto_finish 
+        dones &= active
+
+        new_trajs = trajectories_accum.add_steps_and_auto_finish(
+            f_acts,
+            obs,
+            rews,
+            dones,
+            infos,
+        )
+        trajectories.extend(new_trajs)
+
+        if sample_until is not None:
+            if sample_until(trajectories):
+                # Termination condition has been reached. Mark as inactive any environments
+                # where a trajectory was completed this timestep.
+                active &= ~dones
+
+    # jtorde
+    # Note that all the demos are being saved in InteractiveTrajectoryCollector (venv variable in this function)-->step_wait
+    # That means that, even if len(trajectories)==0 (because none of them finished), we have already saved all the valid demos 
+    ######
+
+    # Each trajectory is sampled i.i.d.; however, shorter episodes are added to
+    # `trajectories` sooner. Shuffle to avoid bias in order. This is important
+    # when callees end up truncating the number of trajectories or transitions.
+    # It is also cheap, since we're just shuffling pointers.
+    rng.shuffle(trajectories)
+
+    # Sanity checks.
+    # for trajectory in trajectories:
+    #     n_steps = len(trajectory.acts)
+    #     # extra 1 for the end
+    #     exp_obs = (n_steps + 1,) + venv.observation_space.shape
+    #     real_obs = trajectory.obs.shape
+    #     assert real_obs == exp_obs, f"expected shape {exp_obs}, got {real_obs}"
+    #     exp_act = (n_steps,) + venv.action_space.shape
+    #     real_act = trajectory.acts.shape
+    #     assert real_act == exp_act, f"expected shape {exp_act}, got {real_act}"
+    #     exp_rew = (n_steps,)
+    #     real_rew = trajectory.rews.shape
+    #     assert real_rew == exp_rew, f"expected shape {exp_rew}, got {real_rew}"
+
+    return trajectories, total_obs_avoidance_failure, total_trans_dyn_limit_failure, \
+        total_yaw_dyn_limit_failure, total_failure, num_demos, mean_computation_time
 
 def rollout_stats(
     trajectories: Sequence[types.TrajectoryWithRew],
