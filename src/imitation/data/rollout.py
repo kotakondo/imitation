@@ -453,7 +453,7 @@ def generate_trajectories_for_benchmark(
     *,
     deterministic_policy: bool = False,
     rng: np.random.RandomState = np.random,
-    total_demos_per_round = float("inf"),
+    total_trajs_to_evaluate = float("inf"),
 ) -> Sequence[types.TrajectoryWithRew]:
     """
     Changed from generate_trajectories() to generate trajectories for benchmarking
@@ -490,6 +490,7 @@ def generate_trajectories_for_benchmark(
 
     ##
     ## Initilaze trajectory list to collect rollout tuples.
+    ## This will contrain all the finished trajectories (ref: add_steps_and_auto_finish())
     ##
 
     trajectories = []
@@ -522,14 +523,16 @@ def generate_trajectories_for_benchmark(
     total_trans_dyn_limit_failure=0
     total_yaw_dyn_limit_failure=0
     total_failure=0
-    while np.any(active) and num_demos<total_demos_per_round:
+
+    # while np.any(active) and num_demos<total_trajs_to_evaluate:
+    while np.any(active) and len(trajectories)<total_trajs_to_evaluate:
 
         if computation_time_verbose:
             f_acts, mean_computation_time = get_actions(f_obs)
         else:
             f_acts = get_actions(f_obs)
 
-        print(f"Number of demos: {num_demos}/{total_demos_per_round}")
+        print(f"Number of demos: {num_demos}/{total_trajs_to_evaluate}")
 
         is_nan_action = False
         for i in range(len(f_acts)): #loop over all the environments
@@ -540,7 +543,7 @@ def generate_trajectories_for_benchmark(
                 total_failure+=1
                 is_nan_action = True
 
-        if(num_demos>=total_demos_per_round): #To avoid dropping partial trajectories
+        if(num_demos>=total_trajs_to_evaluate): #To avoid dropping partial trajectories
             venv.env_method("forceDone") 
 
         ##
@@ -656,6 +659,7 @@ def rollout_stats(
         traj_descriptors["monitor_return"] = np.asarray(monitor_ep_returns)
         # monitor_return_len may be < n_traj when infos is sometimes missing
         out_stats["monitor_return_len"] = len(traj_descriptors["monitor_return"])
+
 
     stat_names = ["min", "mean", "std", "max"]
     for desc_name, desc_vals in traj_descriptors.items():
