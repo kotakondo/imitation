@@ -10,10 +10,7 @@ from stable_baselines3.common.base_class import BaseAlgorithm
 from stable_baselines3.common.policies import BasePolicy
 from stable_baselines3.common.utils import check_for_correct_spaces
 from stable_baselines3.common.vec_env import VecEnv
-
-
 from imitation.data import types
-
 
 def unwrap_traj(traj: types.TrajectoryWithRew) -> types.TrajectoryWithRew:
     """Uses `RolloutInfoWrapper`-captured `obs` and `rews` to replace fields.
@@ -532,14 +529,13 @@ def generate_trajectories_for_benchmark(
         ## To make sure benchmarking is fair, we reset the environemnt
         ##
 
-        f_obs = venv.reset()
+        # f_obs = venv.reset()
 
         if computation_time_verbose:
             f_acts, computation_time = get_actions(f_obs)
         else:
             f_acts = get_actions(f_obs)
 
-        print(f"Number of demos: {num_demos}/{total_demos}")
 
         is_nan_action = False
         for i in range(len(f_acts)): #loop over all the environments
@@ -549,6 +545,8 @@ def generate_trajectories_for_benchmark(
             else:
                 total_failure+=1
                 is_nan_action = True
+
+        print(f"Number of demos: {num_demos}/{total_demos}")
 
         if(num_demos >= total_demos): #To avoid dropping partial trajectories
             venv.env_method("forceDone") 
@@ -579,7 +577,8 @@ def generate_trajectories_for_benchmark(
         ## other stats
         ##
 
-        computation_times.append(computation_time)
+        if computation_time_verbose:
+            computation_times.append(computation_time)
         costs.extend(-rews)
 
     return total_obs_avoidance_failure, total_trans_dyn_limit_failure, \
@@ -739,7 +738,6 @@ def generate_transitions(
         truncated = {k: arr[:n_timesteps] for k, arr in as_dict.items()}
         transitions = types.TransitionsWithRew(**truncated)
     return transitions
-
 
 def rollout_and_save(
     path: str,
