@@ -453,7 +453,7 @@ def generate_trajectories_for_benchmark(
     *,
     deterministic_policy: bool = False,
     rng: np.random.RandomState = np.random,
-    total_trajs_to_evaluate = float("inf"),
+    total_demos = float("inf"),
 ) -> Sequence[types.TrajectoryWithRew]:
     """
     Changed from generate_trajectories() to generate trajectories for benchmarking
@@ -523,16 +523,23 @@ def generate_trajectories_for_benchmark(
     total_trans_dyn_limit_failure=0
     total_yaw_dyn_limit_failure=0
     total_failure=0
+    computation_times = []
+    costs = []
 
-    # while np.any(active) and num_demos<total_trajs_to_evaluate:
-    while np.any(active) and len(trajectories)<total_trajs_to_evaluate:
+    while np.any(active) and num_demos < total_demos:
+
+        ##
+        ## To make sure benchmarking is fair, we reset the environemnt
+        ##
+
+        f_obs = venv.reset()
 
         if computation_time_verbose:
-            f_acts, mean_computation_time = get_actions(f_obs)
+            f_acts, computation_time = get_actions(f_obs)
         else:
             f_acts = get_actions(f_obs)
 
-        print(f"Number of demos: {num_demos}/{total_trajs_to_evaluate}")
+        print(f"Number of demos: {num_demos}/{total_demos}")
 
         is_nan_action = False
         for i in range(len(f_acts)): #loop over all the environments
@@ -543,7 +550,7 @@ def generate_trajectories_for_benchmark(
                 total_failure+=1
                 is_nan_action = True
 
-        if(num_demos>=total_trajs_to_evaluate): #To avoid dropping partial trajectories
+        if(num_demos >= total_demos): #To avoid dropping partial trajectories
             venv.env_method("forceDone") 
 
         ##
@@ -567,58 +574,16 @@ def generate_trajectories_for_benchmark(
                 total_yaw_dyn_limit_failure+=1
             if not is_nan_action and (infos[i]["obst_avoidance_violation"] or infos[i]["trans_dyn_lim_violation"] or infos[i]["yaw_dyn_lim_violation"]):
                 total_failure+=1
+        
+        ##
+        ## other stats
+        ##
 
-        # If an environment is inactive, i.e. the episode completed for that
-        # environment after `sample_until(trajectories)` was true, then we do
-        # *not* want to add any subsequent trajectories from it. We avoid this
-        # by just making it never done.
-        # (jtorde) But note that that env will be reset and will keep being called
-        # (jtorde) and more demos will keep being saved in the InteractiveTrajectoryCollector (venv variable in this function)-->step_wait function (see dagger.py)
-        # Note that only the environments that have done==True are the ones that are finished in add_steps_and_auto_finish 
-        dones &= active
+        computation_times.append(computation_time)
+        costs.extend(-rews)
 
-        new_trajs = trajectories_accum.add_steps_and_auto_finish(
-            f_acts,
-            obs,
-            rews,
-            dones,
-            infos,
-        )
-        trajectories.extend(new_trajs)
-
-        if sample_until is not None:
-            if sample_until(trajectories):
-                # Termination condition has been reached. Mark as inactive any environments
-                # where a trajectory was completed this timestep.
-                active &= ~dones
-
-    # jtorde
-    # Note that all the demos are being saved in InteractiveTrajectoryCollector (venv variable in this function)-->step_wait
-    # That means that, even if len(trajectories)==0 (because none of them finished), we have already saved all the valid demos 
-    ######
-
-    # Each trajectory is sampled i.i.d.; however, shorter episodes are added to
-    # `trajectories` sooner. Shuffle to avoid bias in order. This is important
-    # when callees end up truncating the number of trajectories or transitions.
-    # It is also cheap, since we're just shuffling pointers.
-    rng.shuffle(trajectories)
-
-    # Sanity checks.
-    # for trajectory in trajectories:
-    #     n_steps = len(trajectory.acts)
-    #     # extra 1 for the end
-    #     exp_obs = (n_steps + 1,) + venv.observation_space.shape
-    #     real_obs = trajectory.obs.shape
-    #     assert real_obs == exp_obs, f"expected shape {exp_obs}, got {real_obs}"
-    #     exp_act = (n_steps,) + venv.action_space.shape
-    #     real_act = trajectory.acts.shape
-    #     assert real_act == exp_act, f"expected shape {exp_act}, got {real_act}"
-    #     exp_rew = (n_steps,)
-    #     real_rew = trajectory.rews.shape
-    #     assert real_rew == exp_rew, f"expected shape {exp_rew}, got {real_rew}"
-
-    return trajectories, total_obs_avoidance_failure, total_trans_dyn_limit_failure, \
-        total_yaw_dyn_limit_failure, total_failure, num_demos, mean_computation_time
+    return total_obs_avoidance_failure, total_trans_dyn_limit_failure, \
+        total_yaw_dyn_limit_failure, total_failure, computation_times, costs, num_demos
 
 def rollout_stats(
     trajectories: Sequence[types.TrajectoryWithRew],
