@@ -529,13 +529,15 @@ def generate_trajectories_for_benchmark(
         ## To make sure benchmarking is fair, we reset the environemnt
         ##
 
-        f_obs = venv.reset()
+        # f_obs = venv.reset()
 
         if computation_time_verbose:
             f_acts, computation_time = get_actions(f_obs)
         else:
             f_acts = get_actions(f_obs)
 
+        for i in range(venv.num_envs):
+            venv.env_method("saveInBag", f_acts[i], indices=[i]) 
 
         is_nan_action = False
         for i in range(len(f_acts)): #loop over all the environments
