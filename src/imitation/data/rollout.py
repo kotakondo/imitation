@@ -254,7 +254,6 @@ def make_sample_until(
 PolicyCallable = Callable[[np.ndarray], np.ndarray]
 AnyPolicy = Union[BaseAlgorithm, BasePolicy, PolicyCallable, None]
 
-
 def _policy_to_callable(
     policy: AnyPolicy,
     venv: VecEnv,
@@ -363,6 +362,8 @@ def generate_trajectories(
     """
     get_actions = _policy_to_callable(policy, venv, deterministic_policy)
 
+    computation_time_verbose = False
+
     # Collect rollout tuples.
     trajectories = []
     # accumulator for incomplete trajectories
@@ -389,7 +390,14 @@ def generate_trajectories(
 
         print(f"Number of demos: {num_demos}/{total_demos_per_round}")
 
-        acts = get_actions(obs)
+        num_obses = venv.env_method("get_num_obs")
+        num_max_of_obsts = venv.env_method("get_num_max_of_obst")
+        CPs_per_obstacle = venv.env_method("get_CPs_per_obstacle") #this is a list, but all the elements are the same
+
+        if computation_time_verbose:
+            acts, computation_time = get_actions(obs, num_obses)
+        else:
+            acts = get_actions(obs, num_obses)
 
         for i in range(len(acts)):
             #acts[i,:,:] is the action of environment i
