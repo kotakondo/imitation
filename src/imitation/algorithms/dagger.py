@@ -470,7 +470,7 @@ class DAggerTrainer(base.BaseImitationAlgorithm):
         ##################
         return demo_transitions, num_demos_by_round
 
-    # Function added by @Kota
+    # Function added by Kota
     def _load_evaluation_demos(self):
         """Load demonstrations from the evaluation data set"""
         round_dir = self._evaluation_demo_dir()

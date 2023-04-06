@@ -12,6 +12,9 @@ from stable_baselines3.common.utils import check_for_correct_spaces
 from stable_baselines3.common.vec_env import VecEnv
 from imitation.data import types
 
+from compression.policies.ExpertPolicy import ExpertPolicy
+from compression.policies.StudentPolicy import StudentPolicy
+
 def unwrap_traj(traj: types.TrajectoryWithRew) -> types.TrajectoryWithRew:
     """Uses `RolloutInfoWrapper`-captured `obs` and `rews` to replace fields.
 
@@ -265,24 +268,36 @@ def _policy_to_callable(
             acts = [venv.action_space.sample() for _ in range(len(states))]
             return np.stack(acts, axis=0)
 
-    # elif isinstance(policy, (ExpertPolicy,StudentPolicy)): #to avoid importing ExpertPolicy and StudentPolicy in this file
-    elif hasattr(policy, 'predictSeveral'):
+    # elif hasattr(policy, 'predictSeveral'): #to avoid importing ExpertPolicy and StudentPolicy in this file
+    elif isinstance(policy, StudentPolicy):
 
-        if computation_time_verbose:
-            def get_actions(states):
-                acts, mean_computation_time = policy.predictSeveralWithComputationTimeVerbose(  # pytype: disable=attribute-error
-                    states,
-                    deterministic=deterministic_policy,
-                )
+        def get_actions(*args):
+            states, num_obses = args
+            acts, mean_computation_time = policy.predictSeveralWithComputationTimeVerbose(  # pytype: disable=attribute-error
+                states,
+                num_obses=num_obses,
+                deterministic=deterministic_policy
+            )
+
+            if computation_time_verbose:
                 return acts, mean_computation_time
+            else:
+                return acts
+    
+    elif isinstance(policy, ExpertPolicy):
 
-        else:
-            def get_actions(states):
-                acts = policy.predictSeveral(  # pytype: disable=attribute-error
-                    states,
-                    deterministic=deterministic_policy,
-                )
-                return acts    
+        def get_actions(*args):
+            states = args[0]
+            acts, mean_computation_time = policy.predictSeveralWithComputationTimeVerbose(  # pytype: disable=attribute-error
+                states,
+                deterministic=deterministic_policy
+            )
+
+            if computation_time_verbose:
+                return acts, mean_computation_time
+            else:
+                return acts
+      
 
     elif isinstance(policy, (BaseAlgorithm, BasePolicy)):
         # There's an important subtlety here: BaseAlgorithm and BasePolicy
@@ -531,11 +546,21 @@ def generate_trajectories_for_benchmark(
 
         f_obs = venv.reset()
 
-        if computation_time_verbose:
-            f_acts, computation_time = get_actions(f_obs)
-        else:
-            f_acts = get_actions(f_obs)
+        ##
+        ## in getFutureWPosStaticObstacles() and getFutureWPosDynamicObstacles(), we added dummy obstacles to meet the max number of obstacles
+        ## because (1) Expert needs a fixed number of obstacles to generate actions, and (2) venv needs a fixed number of observation space
+        ## For expert, this is not a problem, but for student, we need to get rid of redundant observations
+		## And it is done in predictSeveral() and _predict() in StudentPolicy.py
+        ##
 
+        num_obses = venv.env_method("get_num_obs")
+        num_max_of_obsts = venv.env_method("get_num_max_of_obst")
+        CPs_per_obstacle = venv.env_method("get_CPs_per_obstacle") #this is a list, but all the elements are the same
+
+        if computation_time_verbose:
+            f_acts, computation_time = get_actions(f_obs, num_obses)
+        else:
+            f_acts = get_actions(f_obs, num_obses)
 
         is_nan_action = False
         for i in range(len(f_acts)): #loop over all the environments
