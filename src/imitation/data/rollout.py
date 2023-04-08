@@ -272,14 +272,14 @@ def _policy_to_callable(
 
         def get_actions(*args):
             states, num_obses = args
-            acts, mean_computation_time = policy.predictSeveralWithComputationTimeVerbose(  # pytype: disable=attribute-error
+            acts, computation_times = policy.predictSeveralWithComputationTimeVerbose(  # pytype: disable=attribute-error
                 states,
                 num_obses=num_obses,
                 deterministic=deterministic_policy
             )
 
             if computation_time_verbose:
-                return acts, mean_computation_time
+                return acts, computation_times
             else:
                 return acts
     
@@ -287,13 +287,13 @@ def _policy_to_callable(
 
         def get_actions(*args):
             states = args[0]
-            acts, mean_computation_time = policy.predictSeveralWithComputationTimeVerbose(  # pytype: disable=attribute-error
+            acts, computation_times = policy.predictSeveralWithComputationTimeVerbose(  # pytype: disable=attribute-error
                 states,
                 deterministic=deterministic_policy
             )
 
             if computation_time_verbose:
-                return acts, mean_computation_time
+                return acts, computation_times
             else:
                 return acts
       
@@ -395,7 +395,7 @@ def generate_trajectories(
         CPs_per_obstacle = venv.env_method("get_CPs_per_obstacle") #this is a list, but all the elements are the same
 
         if computation_time_verbose:
-            acts, computation_time = get_actions(obs, num_obses)
+            acts, computation_times = get_actions(obs, num_obses)
         else:
             acts = get_actions(obs, num_obses)
 
@@ -543,7 +543,7 @@ def generate_trajectories_for_benchmark(
     total_trans_dyn_limit_failure=0
     total_yaw_dyn_limit_failure=0
     total_failure=0
-    computation_times = []
+    total_computation_times = []
     costs = []
 
     while np.any(active) and num_demos < total_demos:
@@ -566,7 +566,7 @@ def generate_trajectories_for_benchmark(
         CPs_per_obstacle = venv.env_method("get_CPs_per_obstacle") #this is a list, but all the elements are the same
 
         if computation_time_verbose:
-            f_acts, computation_time = get_actions(f_obs, num_obses)
+            f_acts, computation_times = get_actions(f_obs, num_obses)
         else:
             f_acts = get_actions(f_obs, num_obses)
 
@@ -614,11 +614,11 @@ def generate_trajectories_for_benchmark(
         ##
 
         if computation_time_verbose:
-            computation_times.append(computation_time)
+            total_computation_times.extend(computation_times)
         costs.extend(-rews)
 
     return total_obs_avoidance_failure, total_trans_dyn_limit_failure, \
-        total_yaw_dyn_limit_failure, total_failure, computation_times, costs, num_demos
+        total_yaw_dyn_limit_failure, total_failure, total_computation_times, costs, num_demos
 
 def rollout_stats(
     trajectories: Sequence[types.TrajectoryWithRew],
