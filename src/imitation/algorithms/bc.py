@@ -247,7 +247,6 @@ class BC(algo_base.DemonstrationAlgorithm):
         self.evaluation_data_size = evaluation_data_size
         self.only_test_loss = only_test_loss
         self.epsilon_RWTA = epsilon_RWTA
-        self.yaw_scaling = getPANTHERparamsAsCppStruct().yaw_scaling
         self.use_lstm = getPANTHERparamsAsCppStruct().use_lstm
         self.yaw_loss_weight = getPANTHERparamsAsCppStruct().yaw_loss_weight
         self.use_lr_scheduler = use_lr_scheduler
@@ -397,11 +396,10 @@ class BC(algo_base.DemonstrationAlgorithm):
                     expert_i=       acts[:,i,:].float(); #All the elements
                     student_j=      pred_acts[:,j,:].float() #All the elements
 
-                    expert_pos_i=   acts[:,i,0:self.traj_size_pos_ctrl_pts].float();
+                    expert_pos_i=   acts[:,i,0:self.traj_size_pos_ctrl_pts].float()
                     student_pos_j=  pred_acts[:,j,0:self.traj_size_pos_ctrl_pts].float()
 
-                    # note expert yaw is scaled up by yaw_scaling param
-                    expert_yaw_i=   acts[:,i,self.traj_size_pos_ctrl_pts:(self.traj_size_pos_ctrl_pts+self.traj_size_yaw_ctrl_pts)].float()*self.yaw_scaling
+                    expert_yaw_i=   acts[:,i,self.traj_size_pos_ctrl_pts:(self.traj_size_pos_ctrl_pts+self.traj_size_yaw_ctrl_pts)].float()
                     student_yaw_j=  pred_acts[:,j,self.traj_size_pos_ctrl_pts:(self.traj_size_pos_ctrl_pts+self.traj_size_yaw_ctrl_pts)].float()
 
                     expert_time_i=       acts[:,i,-1:].float(); #Time. Note: Is you use only -1 (instead of -1:), then distance_time_matrix will have required_grad to false
