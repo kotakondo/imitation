@@ -251,6 +251,8 @@ class BC(algo_base.DemonstrationAlgorithm):
         self.yaw_loss_weight = getPANTHERparamsAsCppStruct().yaw_loss_weight
         self.use_lr_scheduler = use_lr_scheduler
         self.activation = {}
+        self.num_obst = getPANTHERparamsAsCppStruct().num_of_obstacles_in_training
+        self.num_oa = getPANTHERparamsAsCppStruct().num_of_other_agents_in_training
         
         super().__init__(
             demonstrations=demonstrations,
@@ -360,7 +362,7 @@ class BC(algo_base.DemonstrationAlgorithm):
             )
 
         else:
-            pred_acts = self.policy.forward(obs, deterministic=True)
+            pred_acts = self.policy.forward(obs, self.num_obst, self.num_oa, deterministic=True)
             # print("=====================================PRED ACTS")
             # print("pred_acts.shape= ", pred_acts.shape)
             # print("pred_acts.float()= ", pred_acts.float())
@@ -382,13 +384,12 @@ class BC(algo_base.DemonstrationAlgorithm):
             # print(f"acts[:,:,:]=\n{acts[:,:,:]}")
             # print(f"acts[:,:,-1]=\n{acts[:,:,-1]}")
 
-            distance_matrix= th.zeros(batch_size, num_of_traj_per_action, num_of_traj_per_action, device=used_device); 
-            distance_pos_matrix= th.zeros(batch_size, num_of_traj_per_action, num_of_traj_per_action, device=used_device); 
-            distance_yaw_matrix= th.zeros(batch_size, num_of_traj_per_action, num_of_traj_per_action, device=used_device); 
-            distance_time_matrix= th.zeros(batch_size, num_of_traj_per_action, num_of_traj_per_action, device=used_device); 
+            distance_matrix= th.zeros(batch_size, num_of_traj_per_action, num_of_traj_per_action, device=used_device)
+            distance_pos_matrix= th.zeros(batch_size, num_of_traj_per_action, num_of_traj_per_action, device=used_device) 
+            distance_yaw_matrix= th.zeros(batch_size, num_of_traj_per_action, num_of_traj_per_action, device=used_device) 
+            distance_time_matrix= th.zeros(batch_size, num_of_traj_per_action, num_of_traj_per_action, device=used_device)
 
-            distance_pos_matrix_within_expert= th.zeros(batch_size, num_of_traj_per_action, num_of_traj_per_action, device=used_device); 
-
+            distance_pos_matrix_within_expert= th.zeros(batch_size, num_of_traj_per_action, num_of_traj_per_action, device=used_device)
 
             for i in range(num_of_traj_per_action):
                 for j in range(num_of_traj_per_action):

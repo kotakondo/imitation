@@ -271,10 +271,11 @@ def _policy_to_callable(
     elif isinstance(policy, StudentPolicy):
 
         def get_actions(*args):
-            states, num_obses = args
+            states, num_obses, num_oas = args
             acts, computation_times = policy.predictSeveralWithComputationTimeVerbose(  # pytype: disable=attribute-error
                 states,
                 num_obses=num_obses,
+                num_oas=num_oas,
                 deterministic=deterministic_policy
             )
 
@@ -390,14 +391,13 @@ def generate_trajectories(
 
         print(f"Number of demos: {num_demos}/{total_demos_per_round}")
 
-        num_obses = venv.env_method("get_num_obs")
-        num_max_of_obsts = venv.env_method("get_num_max_of_obst")
-        CPs_per_obstacle = venv.env_method("get_CPs_per_obstacle") #this is a list, but all the elements are the same
+        num_obses = venv.env_method("get_num_obs") #num of obstacles
+        num_oas = venv.env_method("get_num_oa") #num of other agents
 
         if computation_time_verbose:
-            acts, computation_times = get_actions(obs, num_obses)
+            f_acts, computation_times = get_actions(f_obs, num_obses, num_oas)
         else:
-            acts = get_actions(obs, num_obses)
+            acts = get_actions(obs, num_obses, num_oas)
 
         for i in range(len(acts)):
             #acts[i,:,:] is the action of environment i
@@ -561,12 +561,11 @@ def generate_trajectories_for_benchmark(
 		## And it is done in predictSeveral() and _predict() in StudentPolicy.py
         ##
 
-        num_obses = venv.env_method("get_num_obs")
-        num_max_of_obsts = venv.env_method("get_num_max_of_obst")
-        CPs_per_obstacle = venv.env_method("get_CPs_per_obstacle") #this is a list, but all the elements are the same
+        num_obses = venv.env_method("get_num_obs") #num of obstacles
+        num_oas = venv.env_method("get_num_oa") #num of other agents
 
         if computation_time_verbose:
-            f_acts, computation_times = get_actions(f_obs, num_obses)
+            f_acts, computation_times = get_actions(f_obs, num_obses, num_oas)
         else:
             f_acts = get_actions(f_obs, num_obses)
 
