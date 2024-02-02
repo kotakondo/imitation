@@ -212,6 +212,20 @@ class _WrappedDataLoader:
                     f"!= {len(batch['acts'])} = len(batch['acts'])",
                 )
             yield batch
+            
+        # for GNN
+        # for batch in self.data_loader:
+        #     if len(batch['current_state'].x) != self.expected_batch_size:
+        #         raise ValueError(
+        #             f"Expected batch size {self.expected_batch_size} "
+        #             f"!= len(batch['current_state'].x), which is {len(batch['current_state'].x)}"
+        #         )
+        #     if len(batch.acts) != self.expected_batch_size:
+        #         raise ValueError(
+        #             f"Expected batch size {self.expected_batch_size} "
+        #             f"!= len(batch.acts), which is {len(batch.acts)}"
+        #         )
+        #     yield batch
 
 
 def make_data_loader(

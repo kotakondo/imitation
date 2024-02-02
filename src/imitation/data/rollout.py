@@ -10,10 +10,11 @@ from stable_baselines3.common.base_class import BaseAlgorithm
 from stable_baselines3.common.policies import BasePolicy
 from stable_baselines3.common.utils import check_for_correct_spaces
 from stable_baselines3.common.vec_env import VecEnv
-
-
 from imitation.data import types
 
+from compression.policies.ExpertPolicy import ExpertPolicy
+from compression.policies.StudentPolicy import StudentPolicy
+from compression.policies.GNNStudentPolicy import GNNStudentPolicy
 
 def unwrap_traj(traj: types.TrajectoryWithRew) -> types.TrajectoryWithRew:
     """Uses `RolloutInfoWrapper`-captured `obs` and `rews` to replace fields.
@@ -254,28 +255,27 @@ def make_sample_until(
 PolicyCallable = Callable[[np.ndarray], np.ndarray]
 AnyPolicy = Union[BaseAlgorithm, BasePolicy, PolicyCallable, None]
 
-
 def _policy_to_callable(
     policy: AnyPolicy,
     venv: VecEnv,
     deterministic_policy: bool,
 ) -> PolicyCallable:
     """Converts any policy-like object into a function from observations to actions."""
+
+    # if policy is None
     if policy is None:
 
         def get_actions(states):
             acts = [venv.action_space.sample() for _ in range(len(states))]
             return np.stack(acts, axis=0)
 
-    # elif isinstance(policy, (ExpertPolicy,StudentPolicy)): #to avoid importing ExpertPolicy and StudentPolicy in this file
-    elif hasattr(policy, 'predictSeveral'):
+    # if policy is expert policy or student policy or GNN student policy
+    elif isinstance(policy, ExpertPolicy) or isinstance(policy, StudentPolicy) or isinstance(policy, GNNStudentPolicy):
 
-        def get_actions(states):
-            acts = policy.predictSeveral(  # pytype: disable=attribute-error
-                states,
-                deterministic=deterministic_policy,
-            )
-            return acts    
+        def get_actions(*args):
+            states = args[0]
+            acts = policy.predictSeveral(states)
+            return acts
 
     elif isinstance(policy, (BaseAlgorithm, BasePolicy)):
         # There's an important subtlety here: BaseAlgorithm and BasePolicy
@@ -286,9 +286,9 @@ def _policy_to_callable(
         def get_actions(states):
             # pytype doesn't seem to understand that policy is a BaseAlgorithm
             # or BasePolicy here, rather than a Callable
+
             acts, _ = policy.predict(  # pytype: disable=attribute-error
                 states,
-                deterministic=deterministic_policy,
             )
             return acts
 
@@ -296,17 +296,13 @@ def _policy_to_callable(
         get_actions = policy
 
     else:
-        raise TypeError(
-            "Policy must be None, a stable-baselines policy or algorithm, "
-            f"or a Callable, got {type(policy)} instead",
-        )
+        raise TypeError(f"""Policy must be None, a stable-baselines policy or algorithm, or a Callable, got {type(policy)} instead""")
 
     if isinstance(policy, BaseAlgorithm):
         # check that the observation and action spaces of policy and environment match
         check_for_correct_spaces(venv, policy.observation_space, policy.action_space)
 
     return get_actions
-
 
 def generate_trajectories(
     policy: AnyPolicy,
@@ -339,6 +335,7 @@ def generate_trajectories(
         may be collected to avoid biasing process towards short episodes; the user
         should truncate if required.
     """
+    
     get_actions = _policy_to_callable(policy, venv, deterministic_policy)
 
     # Collect rollout tuples.
@@ -362,21 +359,15 @@ def generate_trajectories(
     #
     # To start with, all environments are active.
     active = np.ones(venv.num_envs, dtype=bool)
-    num_demos=0;
-    while np.any(active) and num_demos<total_demos_per_round:
+    num_demos=0
+    while np.any(active) and num_demos < total_demos_per_round:
+
+        print(f"Number of demos: {num_demos}/{total_demos_per_round}")
+
+        num_obses = venv.env_method("get_num_obs") #num of obstacles
+        num_oas = venv.env_method("get_num_oa") #num of other agents
+
         acts = get_actions(obs)
-
-        # "Need at least two internal knots" bugfix
-
-        # print("acts\n", acts)
-
-        # for i, act in enumerate(acts):
-        #     # act (=acts[i,:,:]) is the action of env 1
-        #     # print(f"env-{i}")
-        #     # print(f"act {act}")
-        #     for j, ac in enumerate(act):
-        #         print(f"total time {ac[-1]}")
-        #         # exit(0)
 
         for i in range(len(acts)):
             #acts[i,:,:] is the action of environment i
@@ -386,8 +377,13 @@ def generate_trajectories(
         if(num_demos>=total_demos_per_round): #To avoid dropping partial trajectories
             venv.env_method("forceDone") 
 
-        obs, rews, dones, infos = venv.step(acts) #This will call step_wait of  InteractiveTrajectoryCollector of dagger.py
+        ##
+        ## get obs, rewards, dones, infos
+        ## this will call step() in InteractiveTrajectoryCollector (see dagger.py)
+        ## and will eventually call step_wait() in InteractiveTrajectoryCollector (see dagger.py)
+        ##
 
+        obs, rews, dones, infos = venv.step(acts) 
 
         # If an environment is inactive, i.e. the episode completed for that
         # environment after `sample_until(trajectories)` was true, then we do
@@ -440,6 +436,157 @@ def generate_trajectories(
 
     return trajectories
 
+def generate_trajectories_for_benchmark(
+    policy: AnyPolicy,
+    venv: VecEnv, #Note that a InteractiveTrajectoryCollector is also valid here
+    sample_until: GenTrajTerminationFn = None, #not used anymore
+    *,
+    deterministic_policy: bool = False,
+    rng: np.random.RandomState = np.random,
+    total_demos = float("inf"),
+) -> Sequence[types.TrajectoryWithRew]:
+    """
+    Changed from generate_trajectories() to generate trajectories for benchmarking
+    
+    Generate trajectory dictionaries from a policy and an environment.
+
+    Args:
+        policy: Can be any of the following:
+            1) A stable_baselines3 policy or algorithm trained on the gym environment.
+            2) A Callable that takes an ndarray of observations and returns an ndarray
+            of corresponding actions.
+            3) None, in which case actions will be sampled randomly.
+        venv: The vectorized environments to interact with.
+        sample_until: A function determining the termination condition.
+            It takes a sequence of trajectories, and returns a bool.
+            Most users will want to use one of `min_episodes` or `min_timesteps`.
+        deterministic_policy: If True, asks policy to deterministically return
+            action. Note the trajectories might still be non-deterministic if the
+            environment has non-determinism!
+        rng: used for shuffling trajectories.
+
+    Returns:
+        Sequence of trajectories, satisfying `sample_until`. Additional trajectories
+        may be collected to avoid biasing process towards short episodes; the user
+        should truncate if required.
+    """
+
+    ##
+    ## Convert policy to a callable.
+    ##
+
+    get_actions = _policy_to_callable(policy, venv, deterministic_policy)
+
+    ##
+    ## Initilaze trajectory list to collect rollout tuples.
+    ## This will contrain all the finished trajectories (ref: add_steps_and_auto_finish())
+    ##
+
+    trajectories = []
+
+    ##
+    ## accumulator for incomplete trajectories
+    ##
+
+    trajectories_accum = TrajectoryAccumulator()
+    f_obs = venv.reset()
+    
+    for env_idx, ob in enumerate(f_obs):
+        # Seed with first obs only. Inside loop, we'll only add second obs from
+        # each (s,a,r,s') tuple, under the same "obs" key again. That way we still
+        # get all observations, but they're not duplicated into "next obs" and
+        # "previous obs" (this matters for, e.g., Atari, where observations are
+        # really big).
+        trajectories_accum.add_step(dict(obs=ob), env_idx)
+
+    # Now, we sample until `sample_until(trajectories)` is true.
+    # If we just stopped then this would introduce a bias towards shorter episodes,
+    # since longer episodes are more likely to still be active, i.e. in the process
+    # of being sampled from. To avoid this, we continue sampling until all epsiodes
+    # are complete.
+    #
+    # To start with, all environments are active.
+    active = np.ones(venv.num_envs, dtype=bool)
+    num_demos=0
+    total_obs_avoidance_failure=0
+    total_trans_dyn_limit_failure=0
+    total_yaw_dyn_limit_failure=0
+    total_failure=0
+    total_computation_times = []
+    costs = []
+
+    while np.any(active) and num_demos < total_demos:
+
+        ##
+        ## To make sure benchmarking is fair, we reset the environemnt
+        ##
+
+        f_obs = venv.reset()
+
+        ##
+        ## in getFutureWPosStaticObstacles() and getFutureWPosDynamicObstacles(), we added dummy obstacles to meet the max number of obstacles
+        ## because (1) Expert needs a fixed number of obstacles to generate actions, and (2) venv needs a fixed number of observation space
+        ## For expert, this is not a problem, but for student, we need to get rid of redundant observations
+		## And it is done in predictSeveral() and _predict() in StudentPolicy.py
+        ##
+
+        num_obses = venv.env_method("get_num_obs") #num of obstacles
+        num_oas = venv.env_method("get_num_oa") #num of other agents
+
+        if computation_time_verbose:
+            f_acts, computation_times = get_actions(f_obs, num_obses, num_oas)
+        else:
+            f_acts = get_actions(f_obs, num_obses)
+
+        is_nan_action = False
+        for i in range(len(f_acts)): #loop over all the environments
+            # f_acts[i,:,:] is the action of environment i
+            if(np.isnan(np.sum(f_acts[i,:,:]))==False):
+                num_demos+=1
+            else:
+                total_failure+=1
+                is_nan_action = True
+
+        print(f"Number of demos: {num_demos}/{total_demos}")
+
+        if(num_demos >= total_demos): #To avoid dropping partial trajectories
+            venv.env_method("forceDone") 
+
+        ##
+        ## get obs, rewards, dones, infos
+        ## this will call step() in InteractiveTrajectoryCollector (see dagger.py)
+        ## and will eventually call step_wait() in InteractiveTrajectoryCollector (see dagger.py)
+        ##
+        
+        f_obs, rews, dones, infos = venv.step(f_acts) # in here it will choose the best action out of f_acts and calculate rewards for the best action
+
+        for i in range(venv.num_envs):
+            venv.env_method("saveInBag", f_acts[i], indices=[i]) 
+            
+        ##
+        ## calculate the total number of obs_avoidance_failure and dyn_limit_failure
+        ##
+
+        for i in range(len(infos)):
+            if infos[i]["obst_avoidance_violation"]:
+                total_obs_avoidance_failure+=1
+            if infos[i]["trans_dyn_lim_violation"]:
+                total_trans_dyn_limit_failure+=1
+            if infos[i]["yaw_dyn_lim_violation"]:
+                total_yaw_dyn_limit_failure+=1
+            if not is_nan_action and (infos[i]["obst_avoidance_violation"] or infos[i]["trans_dyn_lim_violation"] or infos[i]["yaw_dyn_lim_violation"]):
+                total_failure+=1
+        
+        ##
+        ## other stats
+        ##
+
+        if computation_time_verbose:
+            total_computation_times.extend(computation_times)
+        costs.extend(-rews)
+
+    return total_obs_avoidance_failure, total_trans_dyn_limit_failure, \
+        total_yaw_dyn_limit_failure, total_failure, total_computation_times, costs, num_demos
 
 def rollout_stats(
     trajectories: Sequence[types.TrajectoryWithRew],
@@ -480,6 +627,7 @@ def rollout_stats(
         traj_descriptors["monitor_return"] = np.asarray(monitor_ep_returns)
         # monitor_return_len may be < n_traj when infos is sometimes missing
         out_stats["monitor_return_len"] = len(traj_descriptors["monitor_return"])
+
 
     stat_names = ["min", "mean", "std", "max"]
     for desc_name, desc_vals in traj_descriptors.items():
@@ -594,7 +742,6 @@ def generate_transitions(
         truncated = {k: arr[:n_timesteps] for k, arr in as_dict.items()}
         transitions = types.TransitionsWithRew(**truncated)
     return transitions
-
 
 def rollout_and_save(
     path: str,

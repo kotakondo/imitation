@@ -17,6 +17,7 @@ import numpy as np
 import torch as th
 from stable_baselines3.common import policies, utils, vec_env
 from torch.utils import data as th_data
+from torch_geometric.loader import DataLoader as gnn_th_dataloader
 
 from imitation.algorithms import base, bc
 from imitation.data import rollout, types
@@ -24,6 +25,9 @@ from imitation.util import logger, util
 
 from colorama import init, Fore, Back, Style
 import copy
+
+from torch_geometric.data import Data, HeteroData
+import warnings
 
 class NotEnoughTransitionsForBatch(Exception):
       pass
@@ -69,6 +73,24 @@ class LinearBetaSchedule(BetaSchedule):
         assert round_num >= 0
         return min(1, max(0, (self.rampdown_rounds - round_num) / self.rampdown_rounds))
 
+class OneZeroBetaSchedule(BetaSchedule):
+    """beta = 1 in round 0, and beta = 0 otherwise"""
+
+    def __call__(self, round_num: int) -> float:
+        """Computes beta value.
+
+        Args:
+            round_num: the current round number.
+
+        Returns:
+            beta = 1 in round 0, and beta = 0 otherwise
+        """
+        assert round_num >= 0
+        if round_num == 0:
+            beta = 1.0
+        else:
+            beta = 0.0
+        return beta
 
 def reconstruct_trainer(
     scratch_dir: types.AnyPath,
@@ -119,7 +141,6 @@ def _save_dagger_demo(
     npz_path = pathlib.Path(save_dir, filename)
     np.savez_compressed(npz_path, **dataclasses.asdict(trajectory))
     logging.info(f"Saved demo at '{npz_path}'")
-
 
 def _load_trajectory(npz_path: str) -> types.Trajectory:
     """Load a single trajectory from a compressed Numpy file."""
@@ -230,6 +251,7 @@ class InteractiveTrajectoryCollector(vec_env.VecEnvWrapper):
         where every saved action is the expert action, regardless of whether the
         robot action was used during that timestep.
 
+        This funciton is called when step() is called (https://stable-baselines3.readthedocs.io/en/master/_modules/stable_baselines3/common/vec_env/base_vec_env.html)
         Args:
             actions: the _intended_ demonstrator/expert actions for the current
                 state. This will be executed with probability `self.beta`.
@@ -239,6 +261,7 @@ class InteractiveTrajectoryCollector(vec_env.VecEnvWrapper):
         assert self._is_reset, "call .reset() before .step()"
 
         actual_acts = np.array(actions)
+        
         #Make the environment record that expert action
         for i in range(self.num_envs):
             self.venv.env_method("saveInBag", actual_acts[i],  indices=[i]) 
@@ -251,14 +274,17 @@ class InteractiveTrajectoryCollector(vec_env.VecEnvWrapper):
 
         mask = self.rng.uniform(0, 1, size=(self.num_envs,)) > self.beta
         mask = mask*not_has_nan #This forces to choose the expert if the action has nans. Note that the expert is designed to handle nans, while the student is not
-        ######## For printing:
+        
+        ##
+        ## For printing:
+        ##
+
         selection=[Style.BRIGHT+Fore.WHITE+"student"+Style.RESET_ALL for _ in mask.tolist()]
         for i in range(len(mask)):
             if mask[i]==False:
                 selection[i]=Style.BRIGHT+Fore.BLUE+"expert"+Style.RESET_ALL
         print(self.name+f"Beta: {self.beta}, selecting action from",', '.join(str(item) for item in selection)) #https://stackoverflow.com/a/67172597/6057617
         # print(', '.join(str(item) for item in selection))
-        #############
 
         if np.sum(mask) != 0: #If there is at least one env for which rand()>self.beta
             actual_acts[mask] = self.get_robot_acts(self._last_obs[mask]) #Get the student actions for the cases where mask_i==True. Retain the expert actions when mask_i==False
@@ -273,6 +299,8 @@ class InteractiveTrajectoryCollector(vec_env.VecEnvWrapper):
 
         Stores the transition, and saves trajectory as demo once complete.
 
+        This function is called when .step() is called. (ref: https://stable-baselines3.readthedocs.io/en/master/_modules/stable_baselines3/common/vec_env/base_vec_env.html)
+
         Returns:
             Observation, reward, dones (is terminal?) and info dict.
         """
@@ -285,17 +313,21 @@ class InteractiveTrajectoryCollector(vec_env.VecEnvWrapper):
             infos=infos,
             dones=dones,
         )
+
         for traj in fresh_demos:
+            
             np.set_printoptions(edgeitems=30, linewidth=100000, formatter={'float': lambda x: "{0:0.3f}".format(x)})
 
             ############### (jtorde) remove the cases where the expert failed (returned nans), and the corresponding next observation
             #Note that, the trajectory is terminated when the expert fails, then the nans will only be in the last action
+            
             index_last_act=traj.acts.shape[0]-1
-            has_nans=np.isnan(np.sum(traj.acts[index_last_act,:,:]));
+            has_nans=np.isnan(np.sum(traj.acts[index_last_act,:,:]))
+
             if(has_nans and traj.acts.shape[0]==1):
                 continue #The expert failed the first time --> trajectory is not valid (it has only one action, which has nans)
+            
             elif(has_nans):
-
                 traj_to_save=types.TrajectoryWithRew(
                                                     obs=np.delete(traj.obs,index_last_act+1, 0),
                                                     acts=np.delete(traj.acts,index_last_act, 0),
@@ -303,7 +335,6 @@ class InteractiveTrajectoryCollector(vec_env.VecEnvWrapper):
                                                     terminal=traj.terminal,
                                                     rews=np.delete(traj.rews,index_last_act, 0),
                                                     ) #TODO: make sure the final obs is correct (see coments in add_steps_and_auto_finish() of rollout.py. Not using that obs right now)
-
 
             else:
                 traj_to_save=traj
@@ -355,6 +386,7 @@ class DAggerTrainer(base.BaseImitationAlgorithm):
         *,
         venv: vec_env.VecEnv,
         scratch_dir: types.AnyPath,
+        eval_dir: types.AnyPath,
         beta_schedule: Callable[[int], float] = None,
         bc_trainer: bc.BC,
         custom_logger: Optional[logger.HierarchicalLogger] = None,
@@ -377,6 +409,7 @@ class DAggerTrainer(base.BaseImitationAlgorithm):
             beta_schedule = LinearBetaSchedule(15)
         self.beta_schedule = beta_schedule
         self.scratch_dir = pathlib.Path(scratch_dir)
+        self.eval_dir = pathlib.Path(eval_dir)
         self.venv = venv
         self.round_num = 0
         self._last_loaded_round = -1
@@ -411,6 +444,10 @@ class DAggerTrainer(base.BaseImitationAlgorithm):
     def batch_size(self) -> int:
         return self.bc_trainer.batch_size
 
+    @property
+    def evaluation_data_size(self) -> int:
+        return self.bc_trainer.evaluation_data_size
+
     #Function added by @Andrea
     def load_demos_at_round(self, round_num, augmented_demos=True):
         round_dir = self._demo_dir_path_for_round(round_num)
@@ -432,12 +469,40 @@ class DAggerTrainer(base.BaseImitationAlgorithm):
         logging.info(f"Loaded {len(self._all_demos)} total")
         demo_transitions = rollout.flatten_trajectories(self._all_demos)
         ##Added by jtorde
-        total_number_pairs=0;
+        total_number_pairs=0
         for demo in self._all_demos:
             total_number_pairs+=len(demo.acts)
         print(Style.BRIGHT+Fore.MAGENTA+f"Loaded {len(self._all_demos)} demos in total ({total_number_pairs} pair expert action/obs). Will use {int(total_number_pairs/self.batch_size)} batches (batch_size={self.batch_size})"+Style.RESET_ALL)
         ##################
         return demo_transitions, num_demos_by_round
+
+    # Function added by Kota
+    def _load_evaluation_demos(self):
+        """Load demonstrations from the evaluation data set"""
+        round_dir = self._evaluation_demo_dir()
+        demo_paths = self._get_demo_paths(round_dir)
+        print(Style.BRIGHT+Fore.MAGENTA+"Loading evaluation data ", round_dir, Style.RESET_ALL)
+        all_evaluation_demos = []
+        all_evaluation_demos.extend(_load_trajectory(p) for p in demo_paths)
+        demo_transitions = rollout.flatten_trajectories(all_evaluation_demos)
+
+        # convert transitions to a heterogeneous graph
+        dataset = self.generate_dataset(demo_transitions.obs, demo_transitions.acts)
+
+        evaluation_data_loader = gnn_th_dataloader(
+                dataset,
+                batch_size=self.evaluation_data_size,
+                shuffle=True,
+            )
+
+        # evaluation_data_loader = th_data.DataLoader(
+        #         demo_transitions,
+        #         self.evaluation_data_size,
+        #         drop_last=True,
+        #         shuffle=True,
+        #         collate_fn=types.transitions_collate_fn,
+        #     )
+        return evaluation_data_loader
 
     def _get_demo_paths(self, round_dir):
         return [
@@ -451,7 +516,11 @@ class DAggerTrainer(base.BaseImitationAlgorithm):
             round_num = self.round_num
         return self.scratch_dir / "demos" / f"round-{round_num:03d}"
 
-    def _try_load_demos(self) -> None:
+    def _evaluation_demo_dir(self) -> pathlib.Path:
+        return self.eval_dir / "demos" / "round-000"
+
+    def _try_load_demos(self, train_evaluation_rate=0.9) -> None:
+
         """Load the dataset for this round into self.bc_trainer as a DataLoader."""
         demo_dir = self._demo_dir_path_for_round()
         demo_paths = self._get_demo_paths(demo_dir) if os.path.isdir(demo_dir) else []
@@ -463,6 +532,7 @@ class DAggerTrainer(base.BaseImitationAlgorithm):
             )
 
         if self._last_loaded_round < self.round_num:
+
             transitions, num_demos = self._load_all_demos()
             logging.info(
                 f"Loaded {sum(num_demos)} new demos from {len(num_demos)} rounds",
@@ -477,6 +547,32 @@ class DAggerTrainer(base.BaseImitationAlgorithm):
                     f"self.batch_size={self.batch_size} > "
                     f"len(transitions)={len(transitions)}")
                 raise NotEnoughTransitionsForBatch()
+            
+            # use GNN 
+
+            # convert transitions to a heterogeneous graph
+            dataset = self.generate_dataset(transitions.obs, transitions.acts)
+
+            # create a dataloader for training and evaluation
+            train_size = int(len(dataset) * train_evaluation_rate)
+            train_size = train_size - (train_size % self.batch_size) # train_size needs to be a multiple of batch_size
+            evaluation_size = len(dataset) - train_size
+            train_dataset, evaluation_dataset = th.utils.data.random_split(dataset, [train_size, evaluation_size])
+
+            # create a training dataloader
+            # data_loader = gnn_th_dataloader(
+            #     train_dataset,
+            #     batch_size=self.batch_size,
+            #     shuffle=True,
+            # )
+
+            # create a evaluation dataloader
+            # evaluation_data_loader = gnn_th_dataloader(
+            #     evaluation_dataset,
+            #     batch_size=self.batch_size,
+            #     shuffle=True,
+            # )
+
             data_loader = th_data.DataLoader(
                 transitions,
                 self.batch_size,
@@ -484,10 +580,170 @@ class DAggerTrainer(base.BaseImitationAlgorithm):
                 shuffle=True,
                 collate_fn=types.transitions_collate_fn,
             )
+
+            # load data for training set
             self.bc_trainer.set_demonstrations(data_loader)
+            # load data for evaluation set
+            # self.bc_trainer.set_evaluation_demonstrations(self._load_evaluation_demos())
+            # self.bc_trainer.set_evaluation_demonstrations(evaluation_data_loader)
             self._last_loaded_round = self.round_num
 
-    def extend_and_update(self, bc_train_kwargs: Optional[Mapping] = None) -> int:
+    def generate_dataset(self, f_obs_ns, true_trajs):
+
+        """
+        This function generates a dataset for GNN
+        """
+
+        device = th.device('cuda' if th.cuda.is_available() else 'cpu')
+
+        " ********************* INITIALIZE DATASET ********************* "
+
+        dataset = []
+
+        assert len(f_obs_ns) == len(true_trajs), "the length of f_obs_ns and true_trajs should be the same"
+
+        for i in range(len(f_obs_ns)):
+
+            " ********************* GET NODES ********************* "
+
+            # nodes you need for GNN
+            # 0. current state
+            # 1. goal state
+            # 2. observation
+            # In the current setting f_obs is a realative state from the current state so we pass f_v, f_z, yaw_dot to the current state node
+
+            feature_vector_for_current_state = th.tensor(f_obs_ns[i][0][0:7]).clone().detach().unsqueeze(0).to('cpu')
+            feature_vector_for_goal = th.tensor(f_obs_ns[i][0][7:10]).clone().detach().unsqueeze(0).to('cpu')
+            feature_vector_for_obs = th.tensor(f_obs_ns[i][0][10:]).clone().detach().unsqueeze(0).to('cpu')
+
+            dist_current_state_goal = th.tensor([np.linalg.norm(feature_vector_for_goal[0, :3])], dtype=th.double).to(device)
+            dist_current_state_obs = th.tensor([np.linalg.norm(feature_vector_for_obs[0, :3])], dtype=th.double).to(device)
+            dist_goal_obs = th.tensor([np.linalg.norm(feature_vector_for_goal[0,:3]-feature_vector_for_obs[0,:3])], dtype=th.double).to(device)
+
+            " ********************* MAKE A DATA OBJECT FOR HETEROGENEUS GRAPH ********************* "
+
+            data = HeteroData()
+
+            # add nodes
+            # get num of obst
+            num_of_obst = int(len(f_obs_ns[i][0, 10:])/33)
+
+            # if type(f_obs_ns[i]) is np.ndarray:
+            #     warnings.warn("f_obs_n is a numpy array - converting it to a torch tensor")
+            #     f_obs_ns[i] = th.tensor(f_obs_ns[i], dtype=th.double).to(device)
+
+            feature_vector_for_current_state = f_obs_ns[i][0,0:7]
+            feature_vector_for_goal = f_obs_ns[i][0,7:10]
+            feature_vector_for_obs = f_obs_ns[i][0,10:]
+
+            dist_current_state_goal = th.tensor([np.linalg.norm(feature_vector_for_goal[:3])], dtype=th.double).to(device)
+
+            dist_current_state_obs = []
+            dist_goal_obs = []
+            for j in range(num_of_obst):
+                dist_current_state_obs.append(np.linalg.norm(feature_vector_for_obs[33*j:33*j+3]))
+                dist_goal_obs.append(np.linalg.norm(feature_vector_for_goal[:3] - feature_vector_for_obs[33*j:33*j+3]))
+
+            dist_current_state_obs = th.tensor(dist_current_state_obs, dtype=th.double).to(device)
+            dist_goal_obs = th.tensor(dist_goal_obs, dtype=th.double).to(device)
+
+            dist_obst_to_obst = []
+            for j in range(num_of_obst):
+                for k in range(num_of_obst):
+                    if j != k:
+                        dist_obst_to_obst.append(np.linalg.norm(feature_vector_for_obs[33*j:33*j+3] - feature_vector_for_obs[33*k:33*k+3]))
+
+            dist_obst_to_obst = th.tensor(dist_obst_to_obst, dtype=th.double).to(device)
+
+            " ********************* MAKE A DATA OBJECT FOR HETEROGENEUS GRAPH ********************* "
+
+            # move feature vectors to tensor
+            feature_vector_for_current_state = th.tensor(feature_vector_for_current_state, dtype=th.double).to(device)
+            feature_vector_for_goal = th.tensor(feature_vector_for_goal, dtype=th.double).to(device)
+            feature_vector_for_obs = th.tensor(feature_vector_for_obs, dtype=th.double).to(device)
+
+            # add nodes
+            data["current_state"].x = feature_vector_for_current_state.unsqueeze(0).to(device).double()
+            data["goal_state"].x = feature_vector_for_goal.unsqueeze(0).to(device).double()
+            data["observation"].x = th.stack([feature_vector_for_obs[33*j:33*(j+1)] for j in range(num_of_obst)], dim=0).to(device).double()
+
+            # add edges
+            # data["current_state", "dist_current_state_to_goal_state", "goal_state"].edge_index = th.tensor([
+            #                                                                             [0],  # idx of source nodes (current state)
+            #                                                                             [0],  # idx of target nodes (goal state)
+            #                                                                             ],dtype=th.int64)
+            # data["current_state", "dist_current_state_to_observation", "observation"].edge_index = th.tensor([
+            #                                                                                 [0],  # idx of source nodes (current state)
+            #                                                                                 [0],  # idx of target nodes (observation)
+            #                                                                                 ],dtype=th.int64)
+            # data["observation", "dist_obs_to_goal", "goal_state"].edge_index = th.tensor([
+            #                                                                                 [0, 0],  # idx of source nodes (observation)
+            #                                                                                 [0, 1],  # idx of target nodes (goal state)
+            #                                                                                 ],dtype=th.int64)
+            # data["observation", "dist_observation_to_current_state", "current_state"].edge_index = th.tensor([
+            #                                                                                 [0, 0],  # idx of source nodes (observation)
+            #                                                                                 [0, 1],  # idx of target nodes (current state)
+            #                                                                                 ],dtype=th.int64)
+            # data["goal_state", "dist_goal_state_to_current_state", "current_state"].edge_index = th.tensor([
+            #                                                                                 [0],  # idx of source nodes (goal state)
+            #                                                                                 [0],  # idx of target nodes (current state)
+            #                                                                                 ],dtype=th.int64)
+            # data["goal_state", "dist_to_obs", "observation"].edge_index = th.tensor([
+            #                                                                                 [0, 0],  # idx of source nodes (goal state)
+            #                                                                                 [0, 1],  # idx of target nodes (observation)
+            #                                                                                 ],dtype=th.int64)
+
+            data["current_state", "dist_current_state_to_goal_state", "goal_state"].edge_index = th.tensor([
+                                                                                        [0],  # idx of source nodes (current state)
+                                                                                        [0],  # idx of target nodes (goal state)
+                                                                                        ],dtype=th.int64)
+            data["current_state", "dist_current_state_to_observation", "observation"].edge_index = th.tensor([
+                                                                                            [0],  # idx of source nodes (current state)
+                                                                                            [0],  # idx of target nodes (observation)
+                                                                                            ],dtype=th.int64)
+            data["observation", "dist_obs_to_goal", "goal_state"].edge_index = th.tensor([
+                                                                                            [0],  # idx of source nodes (observation)
+                                                                                            [0],  # idx of target nodes (goal state)
+                                                                                            ],dtype=th.int64)
+            data["observation", "dist_observation_to_current_state", "current_state"].edge_index = th.tensor([
+                                                                                            [0],  # idx of source nodes (observation)
+                                                                                            [0],  # idx of target nodes (current state)
+                                                                                            ],dtype=th.int64)
+            data["goal_state", "dist_goal_state_to_current_state", "current_state"].edge_index = th.tensor([
+                                                                                            [0],  # idx of source nodes (goal state)
+                                                                                            [0],  # idx of target nodes (current state)
+                                                                                            ],dtype=th.int64)
+            data["goal_state", "dist_to_obs", "observation"].edge_index = th.tensor([
+                                                                                            [0],  # idx of source nodes (goal state)
+                                                                                            [0],  # idx of target nodes (observation)
+                                                                                            ],dtype=th.int64)
+
+            # add edge weights
+            data["current_state", "dist_current_state_to_goal_state", "goal_state"].edge_attr = dist_current_state_goal
+            data["current_state", "dist_current_state_to_observation", "observation"].edge_attr = dist_current_state_obs
+            data["observation", "dist_obs_to_goal", "goal_state"].edge_attr = dist_goal_obs
+            # make it undirected
+            data["observation", "dist_observation_to_current_state", "current_state"].edge_attr = dist_current_state_obs
+            data["goal_state", "dist_goal_state_to_current_state", "current_state"].edge_attr = dist_current_state_goal
+            data["goal_state", "dist_goal_to_obs", "observation"].edge_attr = dist_goal_obs
+
+            # add ground truth trajectory
+            data.acts = th.tensor(true_trajs[i]).clone().detach().unsqueeze(0).to(device)
+            
+            # add observation
+            data.obs = th.tensor(f_obs_ns[i]).clone().detach().unsqueeze(0).to(device)
+
+            # convert the data to the device
+            data = data.to(device)
+            # append data to the dataset
+            dataset.append(data)
+
+        " ********************* RETURN ********************* "
+
+        return dataset
+
+
+    def extend_and_update(self, bc_train_kwargs: Optional[Mapping] = None, train_evaluation_rate: float = 0.9) -> int:
         """Extend internal batch of data and train BC.
 
         Specifically, this method will load new transitions (if necessary), train
@@ -521,7 +777,7 @@ class DAggerTrainer(base.BaseImitationAlgorithm):
             bc_train_kwargs["n_epochs"] = self.DEFAULT_N_EPOCHS
 
         logging.info("Loading demonstrations")
-        self._try_load_demos()
+        self._try_load_demos(train_evaluation_rate)
         logging.info(f"Training at round {self.round_num}")
         self.bc_trainer.train(**bc_train_kwargs)
         self.round_num += 1
@@ -538,6 +794,7 @@ class DAggerTrainer(base.BaseImitationAlgorithm):
         """
         save_dir = self._demo_dir_path_for_round()
         beta = self.beta_schedule(self.round_num)
+
         collector = InteractiveTrajectoryCollector(
             venv=self.venv,
             get_robot_acts=lambda obs: self.bc_trainer.policy.predictSeveral(obs),
@@ -598,6 +855,7 @@ class SimpleDAggerTrainer(DAggerTrainer):
         scratch_dir: types.AnyPath,
         expert_policy: policies.BasePolicy,
         expert_trajs: Optional[Sequence[types.Trajectory]] = None,
+        train_evaluation_rate: float = 0.9,
         **dagger_trainer_kwargs,
     ):
         """Builds SimpleDAggerTrainer.
@@ -636,11 +894,14 @@ class SimpleDAggerTrainer(DAggerTrainer):
             # Save each initial expert trajectory into the "round 0" demonstration
             # data directory.
             for traj in expert_trajs:
+
                 _save_dagger_demo(
                     traj,
                     self._demo_dir_path_for_round(),
                     prefix="initial_data",
                 )
+
+        self.train_evaluation_rate = train_evaluation_rate
 
     def train(
         self,
@@ -681,25 +942,17 @@ class SimpleDAggerTrainer(DAggerTrainer):
                 `self.venv` by default. If neither of the `n_epochs` and `n_batches`
                 keys are provided, then `n_epochs` is set to `self.DEFAULT_N_EPOCHS`.
         """
+
         total_round_count = 0
         round_num = 0
 
         while round_num < n_rounds:
 
-            if(total_demos_per_round>0):
+            if total_demos_per_round > 0:
+
                 collector = self.get_trajectory_collector()
                 round_episode_count = 0
                 round_timestep_count = 0
-
-                # sample_until = rollout.make_sample_until(
-                #     min_timesteps=max(n_traj_per_round, self.batch_size),
-                #     min_episodes=rollout_round_min_episodes,
-                # )
-                #sample_until=rollout.make_min_episodes(n_traj_per_round)
-
-                # print(f"min_timesteps={max(n_traj_per_round, self.batch_size)}")
-                # print(f"min_episodes={rollout_round_min_episodes}")
-                # exit()
 
                 trajectories = rollout.generate_trajectories(
                     policy=self.expert_policy,
@@ -713,7 +966,7 @@ class SimpleDAggerTrainer(DAggerTrainer):
                 for traj in trajectories:
                     # _save_dagger_demo(traj, collector.save_dir) #Already saved in InteractiveTrajectoryCollector-->step_wait
                     self._logger.record_mean(
-                        "dagger/mean_episode_reward",
+                        "round_log/mean_episode_reward",
                         np.sum(traj.rews),
                     )
                     round_timestep_count += len(traj)
@@ -721,12 +974,12 @@ class SimpleDAggerTrainer(DAggerTrainer):
 
                 round_episode_count += len(trajectories)
 
-                self._logger.record("dagger/total_round_count", total_round_count)
-                self._logger.record("dagger/round_num", round_num)
-                self._logger.record("dagger/round_episode_count", round_episode_count)
-                self._logger.record("dagger/round_timestep_count", round_timestep_count)
+                self._logger.record("round_log/total_round_count", total_round_count)
+                self._logger.record("round_log/round_num", round_num)
+                self._logger.record("round_log/round_episode_count", round_episode_count)
+                self._logger.record("round_log/round_timestep_count", round_timestep_count)
 
-            if(only_collect_data==False):
+            if not only_collect_data:
                 bc_train_kwargs_round=copy.deepcopy(bc_train_kwargs)
                 tmp=bc_train_kwargs_round['save_full_policy_path']
                 index = tmp.find('.pt')
@@ -734,7 +987,8 @@ class SimpleDAggerTrainer(DAggerTrainer):
 
                 # `logger.dump` is called inside BC.train within the following fn call:
                 try:
-                    self.extend_and_update(bc_train_kwargs_round)
+                    # train the agent on the collected data
+                    self.extend_and_update(bc_train_kwargs_round, self.train_evaluation_rate)
                 except NotEnoughTransitionsForBatch as e:
                     pass
             
